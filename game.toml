@@ -129,6 +129,13 @@ auto_skip_fmv = false
 # `python3 psxrecomp/tools/texpack.py starter <dump> game-assets/textures/pack
 # --scale 2` makes the pixel-identical skeleton to repaint. Off = byte-identical.
 texture_pack = "game-assets/textures/pack"
+# HD movie pack (psxrecomp/docs/FMV_PACKS.md): <MOVIE>/NNNNN.png|jpg frame
+# sequences (CAPCOM15, ROCK8_0..ROCK8_4 — 320x240 @ 15 fps natively) presented
+# in place of the MDEC picture; the STR still streams and plays its own audio.
+# Offered in the launcher ("HD movies") only when the directory exists.
+# `PSX_FMV_DUMP=dir` dumps the native frames as the 1:1 skeleton;
+# `python3 psxrecomp/tools/fmv_pack.py from-video ...` builds a movie from any video.
+fmv_pack = "game-assets/movies/pack"
 
 # ── Widescreen (experimental, opt-in via the launcher) ────────────────────
 # MM8 is a pure-2D Capcom title of the X4 lineage, so it uses the framework's
