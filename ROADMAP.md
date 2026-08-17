@@ -80,8 +80,8 @@ PCSX-Redux / Dolphin use, adapted to a recomp:
 
 | # | Task | Notes | Size |
 |---|---|---|---|
-| B1 | **Texture identity** | Key = hash of the referenced VRAM rect (texpage + uv rect of the primitive, in the primitive's bpp) + CLUT contents (+ optional page/CLUT coords). Compute per primitive at S× draw time; cache by (page,clut,rect) invalidated by the VRAM dirty bitmap. Sprites (`0x7C`) and quads (`0x2C`) give exact rects; polygons need uv-bbox. | medium |
-| B2 | **Dump mode** | `[video] texture_dump = true` (or debug cmd): write `textures/dump/<hash>.png` (de-palettised RGBA) the first time each key is seen, plus a `dump.json` with page/clut/rect/bpp/first-seen frame. Playing through the game populates the set. Sits beside the disc tree (`game-assets/textures/`). | small |
+| B1 | **Texture identity** | ✅ `runtime/src/texture_pack.c` hooked in `gpu_render.c` (all backends): **texel id** (indices + size + depth, VRAM-location and CLUT independent) + **palette id** (CLUT contents) per primitive; rects exact, triangles by uv-bbox with the inclusive/exclusive rule. `psxrecomp/docs/TEXTURE_PACKS.md`. | done |
+| B2 | **Dump mode** | ✅ `texture_dump` debug cmd / `PSX_TEXTURE_DUMP`: `<tex>-<pal>.png` + `textures.tsv`; unit test `texture_pack_test`. Measured boot → intro stage: 1.2 M notes, 9,701 (texel,palette) pairs, **776 texel ids** (fades ×32 → the split identity is the right call). ⬜ `[video]` key + coverage helper script. | done |
 | B3 | **Load + replace (software hi-res path)** | `[video] texture_pack = "…"`: on start index `<hash>.png` files (any integer scale N ≤ S); in `raster_textured_rect_scaled` / the S× textured triangle path sample the replacement (bilinear or nearest per pack setting) instead of VRAM. Semi-transparency, colour modulation (`texel*color*2/256`), STP bit and 15-bit output stay as on PSX. Missing entries fall back to native texels — a partial pack still works. | medium–large (rasterizer + cache) |
 | B4 | **GL renderer twin** | Same lookup as a texture atlas / array in the GL path (the FBO renderer draws from VRAM textures today); parity tool like `tools/video_filter_check.py` (GL == CPU ≤ 1 LSB with the same pack). | large |
 | B5 | **Present at S×** | Presenting the S× mirror already exists (supersampling); with replacements it becomes real detail. Video filters run after (or are disabled at S>1). Windowed/GL frame-interpolation interplay to check. | small |
@@ -90,13 +90,12 @@ PCSX-Redux / Dolphin use, adapted to a recomp:
 | B8 | **FMV** | The five cutscenes are MDEC 320×240 — no texture to replace. HD path = play a host video (e.g. an upscaled mp4/webm) in place of the STR: hook the STR player's frame presentation (24-bit depth24 path already isolates FMV) and substitute decoded frames at S×, keeping the game's timing/audio from the STR (or the file's own audio). Separate feature; sized only after Track A/B basics. | large |
 | B9 | **Governance** | Opt-in launcher toggle, off = byte-identical (frame hashes on canon), DEGRADED logging when a pack entry mismatches its recorded native hash, tests (unit: hash stability across identical VRAM content; parity: CPU vs GL). | small, continuous |
 
-**Open measurements before sizing B3/B4 firmly** (all cheap with the debug
-build): number of distinct texture keys in the intro stage / whole game
-(cache size, dump volume); how many primitives per frame are textured rects vs
-polys (MM8 is 2D: expect ~all rects); whether the game re-uploads sprite
-frames each frame (VRAM streaming ⇒ hash churn, needs the dirty bitmap to be
-per-page granular) or keeps stage sheets resident (likely, given the PAC page
-layout).
+**Measurements (done with B2)**: intro-stage slice = 776 texel ids (whole
+game: expect low thousands); ~500 textured primitives per frame, 98% 16×16
+rects (`0x7C`) + a few quads; sprite frames ARE streamed per animation frame
+(player slot) but the texel id is location-independent so that costs nothing;
+hashing every primitive every frame is ~1.2 M texel reads/s — no cache needed
+so far.
 
 ## 3. Track C — Engine-side enhancements (after A/B; each its own decision)
 
