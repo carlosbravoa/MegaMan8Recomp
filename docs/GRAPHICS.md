@@ -196,6 +196,12 @@ parts; 258: enemies), which is the proof of the map above.
 
 ## Tools
 
+* `tools/pac_texpack.py OUTDUMP [--all | PAC...]` — every tile definition of
+  the tile-pipeline PACs as a texture-pack **dump** (texel/palette ids hashed
+  exactly like the runtime, `.clut` sidecars, `pairs.tsv` = map draw counts);
+  `tools/texdump_sweep.sh` merges it with headless play dumps into the starter
+  pack (ROADMAP B10, `psxrecomp/docs/TEXTURE_PACKS.md`).
+
 | | |
 |---|---|
 | runtime `vram_upload_log` (debug server; framework) | `{"op":"arm","dir":D}` dumps every upload payload; `list` returns `{seq,frame,x,y,w,h,crc,fw}` |
