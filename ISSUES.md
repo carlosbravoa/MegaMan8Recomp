@@ -448,8 +448,44 @@ GP1 display enable / display area, the GL presenter (`gl_present_ring`,
 FBO-auth state), or the SW hi-res mirror — a `screenshot_file` (native VRAM)
 that shows the picture while `screenshot` is black would split those.
 
-**Next time it happens: press F9 *before* rewinding.** The bundle
-(`saves/bugreports/<stamp>_f9/`: frame.png, frame_hires.png, screen.png,
-state.pst, report.json with gpu_state / present ring / overlay status) is
-enough to load the state headless and bisect. Also note the renderer
-(OpenGL/software) and whether HD textures were on.
+**Analysis of the four 2026-08-17 F9 bundles (14:52–14:57, release, OpenGL,
+supersampling 1, scanlines, stage 04 approaching the boss):**
+
+* The game is not hung and VRAM is not corrupt in the GPU sense: each frame
+  the game still fills the screen black, re-uploads the palette bank and calls
+  VSync — that is its *scheduler* loop running with nothing to draw. VRAM
+  texture pages are empty because the game had cleared them for a load and
+  the code that re-uploads them never ran again.
+* MM8 runs its game logic in a **BIOS thread** (TCB `0xA000E35C`, entry
+  `0x801008C8`, record 0 of a 3-thread table at `0x801FC000`, 80 bytes per
+  record: `u16 state, u16 sleep_counter, u32 entry, u32 thread_id, u32 sp`).
+  The root thread (`func_800F7C6C`, TCB `0xA000E29C`) decrements the sleep
+  counter every VSync and `ChangeThread`s to the game thread when it hits 0;
+  the game thread runs one frame and yields with sleep(1) (`0x800F7ECC`:
+  counter=1, state=1, ChangeThread(root)). Normal cadence: counter 1→0→1
+  every frame (verified with `wtrace` on `0x801FC002`).
+* In all four bundles the counter reads **0xFF53 / 0xFF8A / 0xFF9E / 0xFF5C**:
+  it underflowed 0→0xFFFF and had been counting down 172 / 117 / 97 / 163
+  frames when F9 was pressed (1.6–2.9 s after the screen went black). An
+  underflow means the root thread got control back **before the game thread
+  had yielded** — the runtime's deterministic thread scheduler resumed the
+  yielder while the game thread was mid-frame (its TCB still holds the old
+  context, so it also loses that frame's work). The game thread will wake by
+  itself after 65535 frames (~18 min). Sound (IRQ-driven), input and rewind
+  keep working, and rewinding restores a sane counter — all as reported.
+* Prime suspect: `psx_scheduler_run`'s one-level "switch back to the yielder"
+  safety net (a thread's top-level dispatch returning `pc==0`), or a deferred
+  in-exception `ChangeThread` resolving to the wrong TCB — an IRQ landing
+  while the game thread is running (a lag frame: heavy scenes, boss
+  approach, load transitions = #15) is the likely window. It does not
+  reproduce headless (unpaced software, 13k frames) nor in a 3-minute windowed
+  OpenGL run with rewind on.
+
+**Telemetry added (psxrecomp 2026-08-17):** every F9 bundle now carries the
+scheduler escape ring (`sched_escape_ring`, incl. `safety_net_resumes` and a
+distinct reason 100 / thread event 40 for that path), the last 2048 thread
+events, IRQ contexts, CD/IRQ/DMA state, registers and hot PCs;
+`python3 psxrecomp/tools/bugreport_threads.py <bundle>` prints the trail and
+flags where the per-frame switch cadence breaks. **Next time it happens:
+press F9 before rewinding** and the bundle will show which escape put the
+root thread back early.
