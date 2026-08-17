@@ -1,8 +1,9 @@
 # Mega Man 8 — developer stage select
 
-> **Use bookmarks for stage select.** The savestate-based *Start at* row in
-> the launcher (SYSTEM card; `psxrecomp/docs/BOOKMARKS.md`) works for every
-> stage, boss and menu: take a savestate where you want to start, then
+> **Use bookmarks for stage select (testing aid).** The savestate-based
+> *Start at* row in the launcher (SYSTEM card; `psxrecomp/docs/BOOKMARKS.md`)
+> works for every stage, boss and menu — for the same disc dump + BIOS the
+> states were taken with, so it is a tool for us, not a shipped feature: take a savestate where you want to start, then
 > `bash tools/bookmark.sh add <slot> "04 Grenade Man"`, and it is listed on
 > the next launch (also `--start-state file.pst`, `PSX_START_STATE`, and the
 > in-game launcher loads it immediately). Bookmark files hold game memory:
