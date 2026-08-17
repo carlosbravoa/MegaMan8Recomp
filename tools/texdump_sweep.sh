@@ -9,14 +9,16 @@
 #      names.tsv (human names per texel id) rides along into the pack;
 #   2. headless play-through dumps (texture_dump armed) of what a script can
 #      reach: cold boot title/menus, the developer stage-select warp into stages
-#      00–03 with a walk/jump/shoot loop, and every savestate slot given
-#      (--slot N, repeatable; default: the slots present in saves/scph1001);
+#      00–03 with a walk/jump/shoot loop, every savestate slot given (--slot N,
+#      repeatable; default: the slots present in saves/scph1001), and every
+#      bookmark in saves/bookmarks/*.pst (tools/bookmark.sh; --no-bookmarks
+#      to skip) — each resumed headless and played with the walk loop;
 # then merges everything (texpack.py merge) and, unless --no-pack, regenerates
 # the starter pack at game-assets/textures/pack (texpack.py starter, 2x by
 # default: the identity skeleton to repaint) and prints coverage.
 #
 #   bash tools/texdump_sweep.sh [--slot N ...] [--frames 900] [--scale 2] [--no-pack]
-#                               [--skip-pacs] [--skip-play] [--out build-debug/texdumps]
+#                               [--skip-pacs] [--skip-play] [--no-bookmarks] [--out build-debug/texdumps]
 #
 # Needs the debug build (script mode). Sprites of stages a script cannot reach
 # only come from real play: run the game with PSX_TEXTURE_DUMP=<dir> while you
@@ -24,7 +26,7 @@
 # number of dumps).
 set -euo pipefail
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-out=$root/build-debug/texdumps; frames=900; scale=2; do_pack=1; do_pacs=1; do_play=1; slots=()
+out=$root/build-debug/texdumps; frames=900; scale=2; do_pack=1; do_pacs=1; do_play=1; do_bookmarks=1; slots=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --slot) slots+=("$2"); shift 2 ;;
@@ -33,6 +35,7 @@ while [ "$#" -gt 0 ]; do
         --no-pack) do_pack=0; shift ;;
         --skip-pacs) do_pacs=0; shift ;;
         --skip-play) do_play=0; shift ;;
+        --no-bookmarks) do_bookmarks=0; shift ;;
         --out) out=$2; shift 2 ;;
         -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -64,15 +67,16 @@ menu_loop() {   # cursor around a menu: right/down/cross with waits
     for i in $(seq 1 "$1"); do s="$s;$RIGHT;wait:20;$DOWN;wait:20"; done
     printf '%s' "$s"
 }
-run_dump() {    # $1 = name, $2 = script (without the arm/stats/quit), $3 = extra env (optional)
+run_dump() {    # $1 = name, $2 = script (without the arm/stats/quit), $3.. = extra runtime args (optional)
     local name=$1 script=$2
+    shift 2
     local D=$out/$name
     rm -rf "$D"; mkdir -p "$D"
     local S
     S="{\"cmd\":\"texture_dump\",\"op\":\"arm\",\"dir\":\"$D\"};expect:\"ok\":true;$script;{\"cmd\":\"texture_dump\",\"op\":\"stats\"};quit"
     echo "== $name" >&2
-    ( cd "$root" && env ${3:-} PSX_SCRIPT_LOG="$D/script.log" timeout 1500 "$exe" --game "$root/game.toml" --disc "$disc" --bios "$bios" \
-        --renderer software --headless --script "$S" > "$D/run.log" 2>&1 ) || echo "   (run exited $?)" >&2
+    ( cd "$root" && PSX_SCRIPT_LOG="$D/script.log" timeout 1500 "$exe" --game "$root/game.toml" --disc "$disc" --bios "$bios" \
+        --renderer software --headless --script "$S" "$@" > "$D/run.log" 2>&1 ) || echo "   (run exited $?)" >&2
     grep -o '"unique_texels":[0-9]*' "$D/script.log" | tail -1 >&2 || true
 }
 
@@ -108,6 +112,16 @@ EOF
         run_dump "slot$sl" "wait:30;{\"cmd\":\"savestate\",\"op\":\"load\",\"slot\":$sl};expect:\"ok\":true;wait:30$(walk_loop $((frames / 90)))$(menu_loop 4);wait:120"
         dumps+=("$out/slot$sl")
     done
+    # bookmarks (saves/bookmarks/<label>.pst): resumed right after boot via --start-state
+    if [ "$do_bookmarks" = 1 ]; then
+        for f in "$root"/saves/bookmarks/*.pst; do
+            [ -f "$f" ] || continue
+            label=$(basename "$f" .pst)
+            safe=$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '_')
+            run_dump "bm_$safe" "wait:120$(walk_loop $((frames / 40)))$(menu_loop 4);wait:120" --start-state "$f"
+            dumps+=("$out/bm_$safe")
+        done
+    fi
 fi
 echo "== merge" >&2
 python3 "$root/psxrecomp/tools/texpack.py" merge "$out/all" "${dumps[@]}" | tail -1 >&2
