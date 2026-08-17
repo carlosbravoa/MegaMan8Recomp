@@ -200,7 +200,11 @@ parts; 258: enemies), which is the proof of the map above.
   the tile-pipeline PACs as a texture-pack **dump** (texel/palette ids hashed
   exactly like the runtime, `.clut` sidecars, `pairs.tsv` = map draw counts);
   `tools/texdump_sweep.sh` merges it with headless play dumps into the starter
-  pack (ROADMAP B10, `psxrecomp/docs/TEXTURE_PACKS.md`).
+  pack (ROADMAP B10, `psxrecomp/docs/TEXTURE_PACKS.md`); `--sprites` adds
+  Mega Man's strip cells (PLAYER section 1 + CLUTs 0–15 of section 2) and the
+  bosses' section-17 cells, and `names.tsv` names every texel id
+  (`STAGE00/tile0123`, `PLAYER/strip057_cell07`) for `texpack.py
+  export/import/sheet` (B12).
 
 | | |
 |---|---|

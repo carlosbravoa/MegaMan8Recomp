@@ -17,8 +17,17 @@ backgrounds are covered without playing through it.
     python3 tools/pac_texpack.py OUTDUMP game-assets/disc/cdrom/STDATA/STAGE*.PAC ...
     python3 tools/pac_texpack.py OUTDUMP --all       # every STDATA .PAC with a tile pipeline
 
-Sprites (player / enemies / bosses) are drawn as metasprite cells, not tiles;
-those still come from play-through dumps (or from A3b's tables, B12).
+Sprites: `--sprites` adds the streamed characters of A3b (docs/GRAPHICS.md):
+Mega Man (PLAYER.PAC section 1, drawn as 16×16 metasprite cells of 16-row
+strips) with the in-game CLUT 0 of PLAYER section 2 as the common palette and
+CLUTs 1–15 (weapon colours) as recolour variants, PLAYER section 3 (type 1),
+and the Robot Masters' section-17 strips of the BOSS*.PAC files (texel ids and
+names only — their CLUTs are not known yet, so no PNGs). Enemies drawn from the
+section-258 pages still need play-through dumps.
+
+`names.tsv` (tex_id, name, aliases): a human name per texel id —
+`STAGE00/tile0123`, `PLAYER/strip014_cell02`, `BOSSAQU/strip003_cell00` —
+for texpack.py export/import/sheet (ROADMAP B12).
 """
 from __future__ import annotations
 
@@ -94,7 +103,109 @@ def tile_draw_counts(secs: dict[int, bytes]) -> collections.Counter:
     return cnt
 
 
-def process_pac(path: Path, out: Path, seen: dict, tsv, pairs: collections.Counter, stats: dict):
+EXE_LOAD = 0x800C0000
+FRAME_TABLE_PTRS = 0x8013A3F4   # u32 per character type: -> u32[] {width_units << 24 | strip offset}
+CELL_TABLE_PTRS = 0x8013A428    # u32 per character type: -> u8[] animation cell -> frame id
+# type -> (PAC basename, sheet section); PLAYER section 2 CLUT row 0 = Mega Man's palettes
+SPRITE_TYPES = {0: ("PLAYER", 1), 1: ("PLAYER", 3), 2: ("BOSSTNG", 17), 3: ("BOSSFRO", 17),
+                4: ("BOSSGRE", 17), 5: ("BOSSAQU", 17), 6: ("BOSSCLO", 17), 7: ("BOSSDUO", 17)}
+
+
+def exe_read(exe: bytes, addr: int, n: int) -> bytes:
+    off = 0x800 + (addr - EXE_LOAD)
+    return exe[off:off + n]
+
+
+def strip_frames(exe: bytes, t: int, sheet_len: int):
+    """[(width_units, offset)] of character type t (contiguous strips until the sheet ends)."""
+    t2 = struct.unpack_from("<I", exe_read(exe, FRAME_TABLE_PTRS + 4 * t, 4))[0]
+    frames, pos = [], 0
+    while True:
+        e = struct.unpack_from("<I", exe_read(exe, t2 + 4 * len(frames), 4))[0]
+        w, off = e >> 24, e & 0xFFFFFF
+        if w == 0 or w > 64 or off != pos or off + w * 128 > sheet_len:
+            break
+        frames.append((w, off))
+        pos = off + w * 128
+    return frames
+
+
+def strip_cell_indices(sheet: bytes, w: int, off: int, j: int):
+    """16x16 palette indices of cell j of a strip: pieces of <= 64 halfwords, row stride = piece width."""
+    total = w * 4
+    hw0 = 4 * j
+    p_start = (hw0 // 64) * 64
+    pw = min(64, total - p_start)
+    base = off + (p_start // 64) * 64 * 16 * 2 if p_start else off
+    # pieces are stored back to back: piece p starts at off + sum(prev piece sizes)
+    base = off
+    x0 = 0
+    while x0 + 64 <= hw0:
+        base += min(64, total - x0) * 16 * 2
+        x0 += 64
+    hw_in = hw0 - x0
+    rows = []
+    for y in range(16):
+        row = []
+        for hw in range(hw_in, hw_in + 4):
+            o = base + (y * pw + hw) * 2
+            v = sheet[o] | (sheet[o + 1] << 8)
+            row += [v & 15, (v >> 4) & 15, (v >> 8) & 15, (v >> 12) & 15]
+        rows.append(row)
+    return rows
+
+
+def process_sprites(exe_path: Path, stdata: Path, out: Path, seen: dict, tsv, pairs, names: dict):
+    exe = exe_path.read_bytes()
+    if exe[:8] != b"PS-X EXE":
+        sys.exit(f"{exe_path}: not a PS-X EXE")
+    player = sections((stdata / "PLAYER.PAC").read_bytes())
+    pal = player.get(2)
+    cluts = []
+    if pal:
+        for idx in range(16):
+            cluts.append([struct.unpack_from("<H", pal, (idx * 16 + i) * 2)[0] for i in range(16)])
+    for t, (pac, sec) in SPRITE_TYPES.items():
+        path = stdata / f"{pac}.PAC"
+        if not path.exists():
+            continue
+        secs = sections(path.read_bytes())
+        sheet = secs.get(sec)
+        if not sheet:
+            continue
+        frames = strip_frames(exe, t, len(sheet))
+        n_new = 0
+        for k, (w, off) in enumerate(frames):
+            for j in range(w):
+                idx = strip_cell_indices(sheet, w, off, j)
+                if not any(any(r) for r in idx):
+                    continue                     # empty cell: never drawn as art
+                tid = texel_id(idx, 16, 16)
+                nm = f"{pac}/strip{k:03d}_cell{j:02d}" if t != 1 else f"PLAYER3/strip{k:03d}_cell{j:02d}"
+                names.setdefault(tid, []).append(nm)
+                if t not in (0,) or not cluts:
+                    continue                     # no palette known: names only
+                for ci, clut in enumerate(cluts):
+                    pid = palette_id(clut)
+                    key = (tid, pid)
+                    pairs[key] += 1000 if ci == 0 else 1     # CLUT 0 = the common (in-game) palette
+                    if key in seen:
+                        continue
+                    seen[key] = pac
+                    im = Image.new("RGBA", (16, 16))
+                    px = im.load()
+                    for y in range(16):
+                        for x in range(16):
+                            v = idx[y][x]
+                            px[x, y] = (0, 0, 0, 0) if v == 0 else rgb(clut[v]) + (255,)
+                    im.save(out / f"{tid:016x}-{pid:016x}.png")
+                    (out / f"{tid:016x}-{pid:016x}.clut").write_bytes(b"".join(struct.pack("<H", c) for c in clut))
+                    tsv.write(f"{tid:016x}\t{pid:016x}\t16\t16\t4\t320\t0\t{ci * 16}\t480\t{16 * j}\t192\t0\n")
+                    n_new += 1
+        print(f"{pac}.PAC type {t}: {len(frames)} strips, {sum(w for w, _ in frames)} cells" + (f", {n_new} new pairs" if n_new else " (names only)"))
+
+
+def process_pac(path: Path, out: Path, seen: dict, tsv, pairs: collections.Counter, stats: dict, names: dict):
     data = path.read_bytes()
     secs = sections(data)
     if 4 not in secs or 9 not in secs or 259 not in secs:
@@ -118,6 +229,10 @@ def process_pac(path: Path, out: Path, seen: dict, tsv, pairs: collections.Count
         key = (tid, pid)
         draws = counts.get(did, 0) or 1
         pairs[key] += draws
+        nm = f"{path.stem}/tile{did:04d}"
+        lst = names.setdefault(tid, [])
+        if nm not in lst:
+            lst.append(nm)
         if key in seen:
             continue
         seen[key] = path.name
@@ -140,6 +255,8 @@ def main():
     ap.add_argument("out")
     ap.add_argument("pacs", nargs="*")
     ap.add_argument("--all", action="store_true", help="every STDATA .PAC under game-assets/disc/cdrom/STDATA")
+    ap.add_argument("--sprites", action="store_true", help="add the streamed characters (player + bosses) from the EXE tables")
+    ap.add_argument("--exe", help="boot EXE for --sprites (default game-assets/disc/cdrom/SLUS_004.53)")
     a = ap.parse_args()
     pacs = list(a.pacs)
     if a.all:
@@ -152,10 +269,20 @@ def main():
     seen: dict = {}
     pairs: collections.Counter = collections.Counter()
     stats: dict = {}
+    names: dict = {}
+    root = Path(__file__).resolve().parent.parent
     with open(out / "textures.tsv", "w") as tsv:
         tsv.write("tex_id\tpal_id\tw\th\tbpp\ttexpage_x\ttexpage_y\tclut_x\tclut_y\tu\tv\tfirst_frame\n")
         for p in pacs:
-            process_pac(Path(p), out, seen, tsv, pairs, stats)
+            process_pac(Path(p), out, seen, tsv, pairs, stats, names)
+        if a.sprites:
+            exe = Path(a.exe) if a.exe else root / "game-assets/disc/cdrom/SLUS_004.53"
+            stdata = Path(pacs[0]).resolve().parent if pacs else root / "game-assets/disc/cdrom/STDATA"
+            process_sprites(exe, stdata, out, seen, tsv, pairs, names)
+    with open(out / "names.tsv", "w") as f:
+        f.write("tex_id\tname\taliases\n")
+        for tid, lst in names.items():
+            f.write(f"{tid:016x}\t{lst[0]}\t{' '.join(lst[1:])}\n")
     with open(out / "pairs.tsv", "w") as f:
         f.write("tex_id\tpal_id\tdraws\n")
         for (tid, pid), n in pairs.items():

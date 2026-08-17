@@ -2,9 +2,11 @@
 # texdump_sweep.sh — whole-game texture coverage (ROADMAP B10).
 #
 # Builds ONE merged texture dump for the HD texture pack from:
-#   1. the PAC files themselves (tools/pac_texpack.py --all): every background
-#      tile of every stage / menu / demo / ending with its palettes and map draw
-#      counts — deterministic, no play needed;
+#   1. the PAC files themselves (tools/pac_texpack.py --all --sprites): every
+#      background tile of every stage / menu / demo / ending with its palettes
+#      and map draw counts, plus Mega Man's strip cells (in-game + weapon
+#      palettes) and the bosses' texel ids — deterministic, no play needed;
+#      names.tsv (human names per texel id) rides along into the pack;
 #   2. headless play-through dumps (texture_dump armed) of what a script can
 #      reach: cold boot title/menus, the developer stage-select warp into stages
 #      00–03 with a walk/jump/shoot loop, and every savestate slot given
@@ -77,7 +79,7 @@ run_dump() {    # $1 = name, $2 = script (without the arm/stats/quit), $3 = extr
 dumps=()
 if [ "$do_pacs" = 1 ]; then
     echo "== PAC tiles (offline)" >&2
-    python3 "$root/tools/pac_texpack.py" "$out/pacs" --all | tail -1 >&2
+    python3 "$root/tools/pac_texpack.py" "$out/pacs" --all --sprites | tail -1 >&2
     dumps+=("$out/pacs")
 fi
 if [ "$do_play" = 1 ]; then
@@ -97,7 +99,7 @@ enabled = true
 [feature.values]
 stage = "$st"
 EOF
-        run_dump "stage0$st" "wait:240;$START;wait:240;$START;wait:240;$START;wait:240;$START;wait:240;$START;wait:600;$START;wait:180;$START;wait:180;$CROSS;wait:180;$START;wait:180;$CROSS;wait:300$(walk_loop $((frames / 60)))"
+        run_dump "stage0$st" "wait:240;$START;wait:240;$START;wait:240;$START;wait:240;$START;wait:240;$START;wait:600;$START;wait:180;$START;wait:180;$CROSS;wait:180;$START;wait:180;$CROSS;wait:300$(walk_loop $((frames / 60)))$(walk_loop 20)"
         dumps+=("$out/stage0$st")
     done
     rm -f "$root/build-debug/mods/state.toml"
