@@ -117,3 +117,17 @@ build-release/psx-disc-tree verify game-assets/disc "game-assets/Mega Man 8 (USA
 bash tools/extract_disc.sh --force                                 # re-extract = pristine again
 build-release/psx-disc-tree build game-assets/disc out/mm8-mod.cue --game-toml game.toml   # bin/cue for an emulator
 ```
+
+## Borrowing files from another dump (e.g. the Japanese movies)
+
+Do not copy STRs saved by an ISO browser: they are cooked (2048 B/sector) and
+lose the XA audio sub-headers/payload — the movie plays without sound
+(`tools/str_info.py` says "size is neither a multiple of 2336 nor …"). Copy
+them raw straight out of the other bin/cue instead:
+
+```
+python3 psxrecomp/tools/disc_tree.py copy "Rockman 8 (Japan).cue" game-assets/disc/cdrom 'MOVIE/*.STR'
+python3 tools/str_info.py game-assets/disc/cdrom/MOVIE/*.STR        # must say OK for Mega Man 8
+```
+
+Nothing else in the tree changes; `disc_tree.py status` lists them as MODIFIED.
