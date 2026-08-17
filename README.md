@@ -146,11 +146,30 @@ bash tools/run_mm8.sh            # mounts game-assets/disc/ instead of the .cue
 
 `game-assets/disc/cdrom/` holds every disc file as a plain file, `audio/` the
 two CD-DA tracks as WAV. Edit, replace or add files there and the game serves
-them (see `docs/ASSETS.md`, `psxrecomp/docs/DISC_TREE.md`); `python3
-psxrecomp/tools/disc_tree.py status game-assets/disc` shows what you changed,
-`bash tools/extract_disc.sh --force` restores the pristine tree,
-`MM8_USE_IMAGE=1 bash tools/run_mm8.sh` runs from the .cue again. Needs
-Python ≥ 3.11 (`tomllib`).
+them (`psxrecomp/docs/DISC_TREE.md`); `python3 psxrecomp/tools/disc_tree.py
+status game-assets/disc` shows what you changed, `bash tools/extract_disc.sh
+--force` restores the pristine tree, `MM8_USE_IMAGE=1 bash tools/run_mm8.sh`
+runs from the .cue again. Needs Python ≥ 3.11 (`tomllib`).
+
+### Customizing media (videos, music, sound, graphics)
+
+Everything is a file under `game-assets/disc/`; the runtime serves what is
+there and rewrites the game's file table when a file grew. Details, formats and
+tool names: `docs/ASSETS.md`. What is pending: `ROADMAP.md`.
+
+| I want to change… | Do this |
+|---|---|
+| **CD music** (2 tracks) | Overwrite `audio/track02.wav` / `track03.wav` with any PCM WAV (44.1 kHz/16-bit/stereo served as-is, other formats converted at mount; the track length follows the file). |
+| **A cutscene** (`cdrom/MOVIE/ROCK8_0..4.STR`, `CAPCOM15.STR`) | Same movie, new pictures/sound: jPSXdec → *replace frames* / *replace XA* on the loose `.STR` (keeps timing and length). Different movie: encode STR v2 320×240 ~15 fps with XA stereo 37.8 kHz on file 1/channel 1 (`psxavenc -t str2` or MOVCONV), copy over the original path. Check with `python3 tools/str_info.py <file.STR>` ("OK for Mega Man 8"). Longer files are fine (relocated automatically). |
+| **Sequenced music / sound effects** (`cdrom/SOUND/PBGMxx.PAC`, `PCOMMON.PAC`) | `python3 tools/pac_tool.py unpack <PAC> <dir>` → edit the PsyQ `SEQ` (song), `VAB` header (`VH`) / body (`VB`) with vgmtrans / PSound / MIDI→SEQ / `psxavenc -t vag` → `pac_tool.py pack <dir> <PAC>` back to the same path. |
+| **Graphics** (`cdrom/STDATA/*.PAC`) | Unpack the same way; images are raw VRAM pages (sections 256–260) + BGR555 palettes (section 9). Byte-level edits work today; PNG in/out is the next milestone (`ROADMAP.md`, track A). |
+| **Anything else** | Any file under `cdrom/`, or new files/directories, are served; overlays/EXE are code (use the recompiler / mods). |
+
+Always available: `build-release/psx-disc-tree layout game-assets/disc --game-toml
+game.toml` (what will be served, relocations, table patches), `psx-disc-tree
+verify … "<cue>"` (pristine proof), `psx-disc-tree build … out.cue` (bin/cue of
+your modded tree for an emulator), `bash tools/mm8_headless.sh` (windowless
+screenshot checks).
 
 `tools/regen.sh` wraps `python3 psxrecomp/psxrecomp_cli.py generate --config
 game.toml --project-root . --disc "<cue>" [--bios <BIN>]`. For a debug build with

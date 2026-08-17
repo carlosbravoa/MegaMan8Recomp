@@ -1,0 +1,143 @@
+# MegaMan8Recomp — roadmap
+
+Where the project stands (2026-08-17), what is pending, and the scoping of the
+long road towards **an engine that can draw upscaled / redrawn graphics**.
+Status legend: ✅ done · 🔧 in progress · ⬜ pending · ❓ needs a measurement
+before it can be sized.
+
+## 0. Where we are
+
+| Area | State |
+|---|---|
+| Static recompile of `SLUS_004.53`, boots to gameplay, 0 dispatch misses (15-min attract soak) | ✅ |
+| Streamed overlays (OVL/*.BIN) captured → compiled shards, in-session autocompile (Linux) | ✅ |
+| Widescreen 16:9 (native-wide bg2d), HUD anchoring; stage-start geometry glitch | ✅ / ⬜ (#16) |
+| Video filters, F9 bug bundles, headless script mode | ✅ |
+| Symbols/annotations pipeline; actor / hitbox / camera structs documented | ✅ (73 named of 7,292 — ongoing) |
+| **Extracted disc tree** — game runs from `game-assets/disc/` without the bin/cue, byte-identical while pristine, files editable/relocatable, LBA table rewritten | ✅ |
+| PAC container decoded; `pac_tool.py`; STR/XA/CD-DA parameters known; media replacement procedures | ✅ (README → *Customizing media*, `docs/ASSETS.md`) |
+| Framework fixes as real commits on the `mm8` fork branches; fresh clone reproducible | ✅ (`upstream/README.md`) |
+| Framework PRs to `mstan/psxrecomp` (7) and `mstan/recomp-ui` (1) | ⬜ |
+
+## 1. Track A — Graphics assets: PNG in, PNG out (the prerequisite for everything below)
+
+**Goal:** `tools/pac_gfx.py extract STAGE00.PAC out/` writes every image the
+PAC contributes as PNG (with palette), and `tools/pac_gfx.py pack` rebuilds a
+PAC from edited PNGs, so an artist can repaint sprites, tiles and backgrounds
+without touching hex. Served through the disc tree like everything else.
+
+**What we know** (`docs/ASSETS.md`): STDATA PACs carry pixel data as raw VRAM
+pages (sections 256–260, 32–352 KB, no TIM headers) and palettes as BGR555
+CLUT sets (section 9, 8–16 × 256 entries); tile definitions for the
+background renderer sit in the EXE at `0x80171C3C` (16×16 blocks, 512 bytes
+each, two layers, tile map at `layer+12`); sprite drawing uses `0x7C`
+sprites / `0x2C` quads with texpage + CLUT. Where each section lands in VRAM
+(x, y, w, h, bit depth) and how sprites/tiles index those pages lives in **code**
+(`StageModuleLoad` = `0x801014E8` and its LoadImage calls, the per-stage
+tables in sections 4–8/10–15), not in the data.
+
+**Steps**
+
+| # | Task | How | Size |
+|---|---|---|---|
+| A1 | Map PAC sections → VRAM rects | Debug build: log every CPU→VRAM upload (`gp0_commit_cpu_to_vram`, DMA ch2) during a stage load together with the CD read that fed it (LBA/table entry → PAC section). One headless run per stage; the result is a table `{pac, section, offset, x, y, w, h}` — likely constant per section type. | ❓ small once measured (a debug-server `vram_upload_trace` cmd or the existing wtrace) |
+| A2 | Determine bit depth + CLUT per rect | From the sprite/tile primitives that reference the pages (texpage bits 7–8 = 4/8/15 bpp; CLUT x/y) — dump one frame's GP0 stream (exists: bug-report `frame`/`gpu_state`) and cross-reference. | small |
+| A3 | Sprite / tile *definitions* | Which table gives (u, v, w, h, clut, page) per sprite frame — needed to cut PNGs at sprite granularity rather than whole pages. Candidates: STDATA types 5/6/7 (16-bit records, offset tables), player table in `PLAYER.PAC` type 1 (0x2F300); tiles: `0x80171C3C`. RE against the actor struct we already have (`scrptr/hitptr`, `settbl` — DEBUG MENU names). | medium (Ghidra, 1–3 sessions) |
+| A4 | `tools/pac_gfx.py extract` | Page PNGs (indexed, with all CLUTs as variants) first; sprite-sheet PNGs once A3 lands. Deterministic, round-trip tested like `pac_tool.py roundtrip`. | small after A1–A3 |
+| A5 | `tools/pac_gfx.py pack` | PNG → indexed pixels against the recorded CLUT (error out on colours outside the palette or with a `--requantize`); repack sections; verify with `psx-disc-tree layout` + headless screenshot. Palette-only edits (recolours) are the first thing that will work end to end. | small |
+| A6 | Docs: `docs/GRAPHICS.md` — page maps per PAC type, sprite tables, limits (VRAM page budget, palette rules) | small |
+
+Deliverable check: recolour Mega Man's palette in `PLAYER.PAC`, repack, boot
+headless into the intro stage, screenshot shows the recolour; `extract` →
+`pack` of every PAC round-trips byte-identical.
+
+## 2. Track B — Upscaled graphics in the framework (the long road)
+
+**Goal:** the game draws with **higher-resolution replacement art** (2×/4×
+sprites, tiles, backgrounds; later redrawn assets), opt-in, faithful path
+untouched. This is a *framework* feature (every psxrecomp title benefits) and
+must follow the framework's verified-enhancement carve-out
+(`psxrecomp/docs/SHADOW_ENHANCEMENTS.md`): opt-in, present-time/renderer-side,
+byte-identical with it off, the canon path stays the oracle.
+
+**What already exists to build on**
+
+* Software renderer **S× hi-res mirror** (`gpu_sw_renderer.c`:
+  `sw_renderer_set_scale(S)`, `g_hr`, `rt_hires()`): every primitive is
+  rasterised a second time at S× into a scaled VRAM mirror; the present path
+  downsamples. Today textured primitives sample the *native* texels (nearest,
+  block-upscaled). **This is the hook**: at S× a textured rect/quad can sample
+  an S× replacement texture instead of VRAM.
+* VRAM dirty tracking (`gpu_vram_dirty.c`), depth24 handling, the GL renderer
+  with a VRAM FBO, GLSL filter twins, and the video-filter pipeline
+  (`docs/VIDEO_FILTERS.md`) as the model for "CPU reference + GL twin +
+  parity tool".
+* Widescreen bg2d machinery (extra tile columns) — the HD path must compose
+  with it (same tile draw calls, wider).
+
+**Design sketch (texture-replacement pack)** — the approach DuckStation /
+PCSX-Redux / Dolphin use, adapted to a recomp:
+
+| # | Task | Notes | Size |
+|---|---|---|---|
+| B1 | **Texture identity** | Key = hash of the referenced VRAM rect (texpage + uv rect of the primitive, in the primitive's bpp) + CLUT contents (+ optional page/CLUT coords). Compute per primitive at S× draw time; cache by (page,clut,rect) invalidated by the VRAM dirty bitmap. Sprites (`0x7C`) and quads (`0x2C`) give exact rects; polygons need uv-bbox. | medium |
+| B2 | **Dump mode** | `[video] texture_dump = true` (or debug cmd): write `textures/dump/<hash>.png` (de-palettised RGBA) the first time each key is seen, plus a `dump.json` with page/clut/rect/bpp/first-seen frame. Playing through the game populates the set. Sits beside the disc tree (`game-assets/textures/`). | small |
+| B3 | **Load + replace (software hi-res path)** | `[video] texture_pack = "…"`: on start index `<hash>.png` files (any integer scale N ≤ S); in `raster_textured_rect_scaled` / the S× textured triangle path sample the replacement (bilinear or nearest per pack setting) instead of VRAM. Semi-transparency, colour modulation (`texel*color*2/256`), STP bit and 15-bit output stay as on PSX. Missing entries fall back to native texels — a partial pack still works. | medium–large (rasterizer + cache) |
+| B4 | **GL renderer twin** | Same lookup as a texture atlas / array in the GL path (the FBO renderer draws from VRAM textures today); parity tool like `tools/video_filter_check.py` (GL == CPU ≤ 1 LSB with the same pack). | large |
+| B5 | **Present at S×** | Presenting the S× mirror already exists (supersampling); with replacements it becomes real detail. Video filters run after (or are disabled at S>1). Windowed/GL frame-interpolation interplay to check. | small |
+| B6 | **Backgrounds / tiles** | MM8 backgrounds are 16×16 tile quads built in scratchpad from `0x80171C3C` — they go through B3 naturally (per-tile keys). Parallax layers likewise. Nothing engine-side needed for 2D tiles. | covered by B3 |
+| B7 | **Pack authoring workflow** | `game-assets/textures/dump/` → artist upscales/redraws → `game-assets/textures/pack/`; `tools/texpack.py` validates sizes (multiple of native), lists coverage per stage; docs. Ties to Track A: A4's sprite sheets tell the artist *what* a texture is (name it), the dump tells *how it's sampled*. | small |
+| B8 | **FMV** | The five cutscenes are MDEC 320×240 — no texture to replace. HD path = play a host video (e.g. an upscaled mp4/webm) in place of the STR: hook the STR player's frame presentation (24-bit depth24 path already isolates FMV) and substitute decoded frames at S×, keeping the game's timing/audio from the STR (or the file's own audio). Separate feature; sized only after Track A/B basics. | large |
+| B9 | **Governance** | Opt-in launcher toggle, off = byte-identical (frame hashes on canon), DEGRADED logging when a pack entry mismatches its recorded native hash, tests (unit: hash stability across identical VRAM content; parity: CPU vs GL). | small, continuous |
+
+**Open measurements before sizing B3/B4 firmly** (all cheap with the debug
+build): number of distinct texture keys in the intro stage / whole game
+(cache size, dump volume); how many primitives per frame are textured rects vs
+polys (MM8 is 2D: expect ~all rects); whether the game re-uploads sprite
+frames each frame (VRAM streaming ⇒ hash churn, needs the dirty bitmap to be
+per-page granular) or keeps stage sheets resident (likely, given the PAC page
+layout).
+
+## 3. Track C — Engine-side enhancements (after A/B; each its own decision)
+
+* ⬜ Widescreen #16 (stage-start geometry corruption) — root cause narrowed to
+  the parallax builder at stage start; finish before HD packs stress it.
+* ⬜ Higher internal *geometry* precision (sub-pixel sprite positions,
+  16.16 actor positions already exist) — only meaningful once S× art exists.
+* ⬜ Optional 60 Hz smoothing / frame pacing tweaks (framework: GL frame
+  interpolation thread never swaps on this box — pre-existing #16-framework).
+* ⬜ Redrawn HUD at S× (HUD sprites are ordinary `0x7C` sprites → covered by
+  B3, but the anchored-HUD widescreen rule must apply to the replacement).
+
+## 4. Track D — Framework & project hygiene
+
+* ⬜ Open the seven PRs against `mstan/psxrecomp` and one against
+  `mstan/recomp-ui` from the `mm8` fork branches (`upstream/README.md`,
+  bodies for §1–3 in `upstream/pr/`); rebase `mm8` when they land, re-pin.
+* ⬜ Windows build of the disc-tree code (std::filesystem/ifstream only, but
+  unbuilt there); CI job that runs `disc_tree_test`, `iso_reader_cdda_test`,
+  `video_filter_test`.
+* ⬜ Disc-tree follow-ups: launcher shows "disc tree" as the mounted source;
+  mod packages that overlay *files by path* on top of a tree (today disc mods
+  are keyed on the stock image SHA-256, so they are inert on a tree);
+  extraction from CHD (runtime already mounts CHD).
+* ⬜ `docs/ASSETS.md` unknowns: SOUND section 5/2 tables, STDATA section
+  types 0–3, 10–15 (fall out of Track A's RE).
+* ⬜ Symbolization: keep growing `symbols.toml`/annotations from the DEBUG MENU
+  printers and the stage loader RE.
+* ⬜ ISSUES.md #4 (verification backlog), #7, #5 (generated C size, dev-only).
+
+## 5. Suggested order
+
+1. **A1–A2 measurements** (one debug session): the VRAM map turns the rest of
+   Track A into scripting.
+2. **A4/A5 page-level PNG round trip + palette recolour demo** — first visible
+   artist-facing win.
+3. **B1–B2 dump mode** on the software renderer (small, and it produces the
+   dataset that tells us how big B3 really is).
+4. **A3 sprite tables** in parallel (Ghidra), so dumps and PACs can be
+   cross-named.
+5. **B3 software replace path** → 2× pack of the intro stage as the proof; then
+   B4 GL twin, B7 tooling, B9 governance; B8 FMV last.
+6. Track D PRs whenever a piece is stable — the fork branch makes each one
+   a cherry-pick.
