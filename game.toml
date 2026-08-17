@@ -122,6 +122,13 @@ filter = "none"
 # Off for the bring-up baseline (MOVIE/*.STR MDEC + XA/CDDA). Revisit once the
 # MM8 STR player loop is understood.
 auto_skip_fmv = false
+# HD texture pack (psxrecomp/docs/TEXTURE_PACKS.md): a directory of
+# <tex_id>[-<pal_id>].png at integer multiples of the native texel rect,
+# sampled by both renderers when [video] supersampling >= 2. Offered in the
+# launcher ("HD textures", Display page) only when the directory exists;
+# `python3 psxrecomp/tools/texpack.py starter <dump> game-assets/textures/pack
+# --scale 2` makes the pixel-identical skeleton to repaint. Off = byte-identical.
+texture_pack = "game-assets/textures/pack"
 
 # ── Widescreen (experimental, opt-in via the launcher) ────────────────────
 # MM8 is a pure-2D Capcom title of the X4 lineage, so it uses the framework's
