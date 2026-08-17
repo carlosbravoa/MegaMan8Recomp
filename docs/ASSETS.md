@@ -92,10 +92,26 @@ python3 tools/pac_tool.py unpack game-assets/disc/cdrom/SOUND/PBGM00.PAC /tmp/pb
 python3 tools/pac_tool.py pack /tmp/pbgm00 game-assets/disc/cdrom/SOUND/PBGM00.PAC
 ```
 
-**Replace a cutscene**: decode `MOVIE/ROCK8_0.STR` with jPSXdec, replace
-frames/audio there, save the STR back as 2336-byte sectors (or 2352 with
-sync — both are accepted) to the same path. Longer movies are relocated
-automatically; the table's STR size (sectors × 2336) is rewritten.
+**Replace a cutscene** — the originals are STR v2, 320×240, ~15 fps
+(10 sectors/frame: 8–9 video + 1 audio at 2×), XA-ADPCM stereo 37.8 kHz 4-bit
+on file 1 / channel 1 (`python3 tools/str_info.py MOVIE/ROCK8_0.STR` prints
+this for any STR and flags deviations). Two routes:
+
+* *Keep the movie, change the pictures/sound* — jPSXdec (open the loose `.STR`,
+  it accepts 2336-byte sectors): "replace frames" (`-replaceframes`) /
+  "replace XA" (`-replacexa`) rewrite frames in place at the same size, so the
+  sector layout, timing and length stay identical. Safest.
+* *A different movie* — encode a new STR v2 with the same geometry: e.g.
+  `ffmpeg -i in.mp4 -vf scale=320:240,fps=15 …` then `psxavenc -t str2 …`
+  (or PsyQ MOVCONV) with XA stereo 37800 Hz 4-bit, file 1 channel 1, ~10
+  sectors/frame; check with `tools/str_info.py`. Any length works: a longer
+  file is relocated and the table's STR size (sectors × 2336) rewritten.
+
+Then `cp new.STR game-assets/disc/cdrom/MOVIE/ROCK8_0.STR` (2336 or
+2352-with-sync accepted), `build-release/psx-disc-tree layout game-assets/disc
+--game-toml game.toml | grep -A1 ROCK8_0`, and a windowless check:
+`bash tools/mm8_headless.sh --script 'wait:900;{"cmd":"screenshot","path":"build-release/headless/movie.png"};quit'`
+(cold boot: the Capcom logo plays first, `ROCK8_0` from ~frame 500).
 
 **Prove nothing broke / go back**
 
