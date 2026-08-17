@@ -28,7 +28,7 @@ default_enabled = false
 feature = "stage-select"
 id = "stage"
 label = "Start in stage"
-description = "Index into MM8's stage table (0x80137A5C). Stage 00 is the intro stage the game normally starts with."
+description = "Index into MM8's stage table (0x80137A5C). Stage 00 is the intro stage the game normally starts with. Only stages 00-03 initialise correctly this way (docs/STAGE_SELECT.md); for any stage, boss or menu use the launcher's Start at bookmarks (SYSTEM card, saves/bookmarks/*.pst)."
 group = "Developer"
 type = "choice"
 default = "0"
@@ -49,45 +49,15 @@ label = "Stage 02 — Clown Man (OVL/STAGE02.BIN)"
 value = "3"
 label = "Stage 03 (OVL/STAGE03.BIN)"
 
-[[option.choice]]
-value = "4"
-label = "Stage 04 (OVL/STAGE04.BIN)"
 
-[[option.choice]]
-value = "5"
-label = "Stage 05 (OVL/STAGE05.BIN)"
 
-[[option.choice]]
-value = "6"
-label = "Stage 06 (OVL/STAGE06.BIN)"
 
-[[option.choice]]
-value = "7"
-label = "Stage 07 (OVL/STAGE07.BIN)"
 
-[[option.choice]]
-value = "8"
-label = "Stage 08 (OVL/STAGE08.BIN)"
 
-[[option.choice]]
-value = "9"
-label = "Stage 09 (OVL/STAGE09.BIN)"
 
-[[option.choice]]
-value = "10"
-label = "Stage 0A (OVL/STAGE0A.BIN)"
 
-[[option.choice]]
-value = "11"
-label = "Stage 0B (OVL/STAGE0B.BIN)"
 
-[[option.choice]]
-value = "12"
-label = "Stage 0C (OVL/STAGE0C.BIN)"
 
-[[option.choice]]
-value = "13"
-label = "Stage 0D (OVL/STAGE0D.BIN)"
 
 [[plugin]]
 feature = "stage-select"

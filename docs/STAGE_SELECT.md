@@ -1,5 +1,14 @@
 # Mega Man 8 — developer stage select
 
+> **Use bookmarks for stage select.** The savestate-based *Start at* row in
+> the launcher (SYSTEM card; `psxrecomp/docs/BOOKMARKS.md`) works for every
+> stage, boss and menu: take a savestate where you want to start, then
+> `bash tools/bookmark.sh add <slot> "04 Grenade Man"`, and it is listed on
+> the next launch (also `--start-state file.pst`, `PSX_START_STATE`, and the
+> in-game launcher loads it immediately). Bookmark files hold game memory:
+> share them privately, never commit them. The mod below is the older
+> RAM-poke approach and only works for stages 00–03.
+
 A **testing tool**, not an enhancement: start the game directly in a chosen
 stage instead of playing to it. Off by default; enabling it changes behaviour,
 so it ships as a `mm8.developer.*` package rather than a `mm8.enhancement.*`

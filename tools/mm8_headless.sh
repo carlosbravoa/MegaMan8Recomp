@@ -6,7 +6,7 @@
 # Usage:
 #   bash tools/mm8_headless.sh [--build-dir build-release] [--slot N] [--out DIR]
 #                              [--filter NAME] [--frames N] [--bug-report] [--keep-open]
-#                              [--script 'step;step;...'] [--script-file FILE]
+#                              [--script 'step;step;...'] [--script-file FILE] [-- runtime args]
 #
 # Defaults: load save slot 3 (intro-stage gameplay), wait 60 frames, write
 # frame.png + present.png (post-filter) into --out, quit. --bug-report adds a
@@ -15,9 +15,10 @@
 set -euo pipefail
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 build_dir=build-release; slot=3; out=$root/build-release/headless; filter=""; frames=60
-bug=0; keep=0; script=""; script_file=""
+bug=0; keep=0; script=""; script_file=""; extra=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --) shift; extra=("$@"); break ;;
         --build-dir) build_dir=$2; shift 2 ;;
         --slot) slot=$2; shift 2 ;;
         --out) out=$2; shift 2 ;;
@@ -48,4 +49,4 @@ args=(--headless)
 [ -n "$script_file" ] && args+=(--script-file "$script_file")
 export PSX_SCRIPT_LOG="$out/script.log"
 : > "$PSX_SCRIPT_LOG"
-exec bash "$root/tools/run_mm8.sh" --build-dir "$build_dir" "${args[@]}"
+exec bash "$root/tools/run_mm8.sh" --build-dir "$build_dir" "${args[@]}" "${extra[@]}"
