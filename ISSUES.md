@@ -432,3 +432,24 @@ debug_server.c, gpu_gl_renderer.c).
 present capture, optional `--bug-report`). Verified: slot load → screenshot →
 xbr2x/scale3x present capture → bug-report bundle → clean exit 0 in seconds,
 no window. Patch `upstream/0006-…`.
+
+## #19 — Black screen mid-play, audio + input alive, rewind recovers — OPEN (awaiting an F9 bundle)
+
+Reported 2026-08-17 (first seen 2026-08-16, i.e. **before** the texture-pack
+work — the pack is not a suspect): after a while of normal play the picture
+goes fully black; music keeps playing and Mega Man still jumps and shoots
+(the game runs), and rewinding to an earlier working frame makes everything
+continue correctly. Not yet tied to a load, a timer or a place. Renderer /
+HD-textures state at the time unknown. Possibly the same family as #15
+(black stage, music playing, rewind fixes it).
+
+Since the game keeps running, suspects are the display side, not the CPU:
+GP1 display enable / display area, the GL presenter (`gl_present_ring`,
+FBO-auth state), or the SW hi-res mirror — a `screenshot_file` (native VRAM)
+that shows the picture while `screenshot` is black would split those.
+
+**Next time it happens: press F9 *before* rewinding.** The bundle
+(`saves/bugreports/<stamp>_f9/`: frame.png, frame_hires.png, screen.png,
+state.pst, report.json with gpu_state / present ring / overlay status) is
+enough to load the state headless and bisect. Also note the renderer
+(OpenGL/software) and whether HD textures were on.
