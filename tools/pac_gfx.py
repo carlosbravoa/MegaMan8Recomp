@@ -29,6 +29,13 @@ rows 4–7 of section 9) → `tiles.png` (32 per row) + `tiles.txt`.
 semi-transparent) → `map_layer<N>.png` (RGBA, transparent where empty),
 cropped to the used blocks; `map.txt` lists the block grid.
     pac_gfx.py pack    OUTDIR NEW.PAC [--pac ORIGINAL.PAC] [--from-tiles]
+    pac_gfx.py sprites PLAYER.PAC OUTDIR [--exe disc/SLUS_004.53] [--stage STAGE00.PAC] [--clut N]
+
+`sprites` renders a streamed character sheet (Mega Man): `frames.png` = the
+131 per-frame strips (16 px tall, from the EXE frame table at *(0x8013A3F4+4t))
+in the chosen CLUT of the sheet's palette section, and — given a stage PAC —
+`poses.png` = every animation cell assembled from its metasprite part list
+(section 5: {u16 cell, s8 dx, s8 dy}), i.e. the sprites as drawn.
 
 `pack` rebuilds the PAC from an extract directory: pixel sections from
 `sec<T>_idx.png` (the palette *indices* of the PNG are the pixels — edit them
@@ -270,6 +277,133 @@ def cmd_map(a) -> int:
     return 0
 
 
+# ── A3b: streamed character sprites (player) ───────────────────────────────
+
+EXE_LOAD = 0x800C0000
+FRAME_TABLE_PTRS = 0x8013A3F4   # u32 per character type: -> u32[] {width_units << 24 | strip offset}
+CELL_TABLE_PTRS = 0x8013A428    # u32 per character type: -> u8[] animation cell -> frame id
+
+
+def exe_read(exe: bytes, addr: int, n: int) -> bytes:
+    off = 0x800 + (addr - EXE_LOAD)
+    return exe[off:off + n]
+
+
+def cmd_sprites(a) -> int:
+    """Per-frame strips + assembled poses of a streamed character (default: Mega Man)."""
+    exe = Path(a.exe).read_bytes()
+    if exe[:8] != b"PS-X EXE":
+        sys.exit(f"{a.exe}: not a PS-X EXE")
+    sheet_secs = sections(Path(a.pac).read_bytes())
+    strips_data = sheet_secs.get(a.sheet_section)
+    if strips_data is None:
+        sys.exit(f"{a.pac}: no section {a.sheet_section}")
+    pal_secs = sections(Path(a.palette_pac).read_bytes()) if a.palette_pac else sheet_secs
+    palsec = pal_secs.get(a.palette_type)
+    if palsec is None:
+        print(f"no palette section {a.palette_type} — using a grey ramp (pass --palette-pac/--palette-type/--clut)", file=sys.stderr)
+        cl = [(i * 17, i * 17, i * 17) for i in range(16)]
+    else:
+        cl = clut16(palsec, a.clut // 16, a.clut % 16)
+    rgba = [c + ((0,) if i == 0 else (255,)) for i, c in enumerate(cl)]
+    t = a.type
+    t2 = struct.unpack_from("<I", exe_read(exe, FRAME_TABLE_PTRS + 4 * t, 4))[0]
+    t1 = struct.unpack_from("<I", exe_read(exe, CELL_TABLE_PTRS + 4 * t, 4))[0]
+    # frame table: contiguous strips until the sheet is exhausted
+    frames = []
+    pos = 0
+    while True:
+        e = struct.unpack_from("<I", exe_read(exe, t2 + 4 * len(frames), 4))[0]
+        w, off = e >> 24, e & 0xFFFFFF
+        if w == 0 or w > 64 or off != pos or off + w * 128 > len(strips_data):
+            break
+        frames.append((w, off))
+        pos = off + w * 128
+    if not frames:
+        sys.exit("no frames decoded — wrong --type / --exe?")
+    # cell table: bytes until they stop being valid frame ids or the next table begins
+    tables = sorted({struct.unpack_from("<I", exe_read(exe, base + 4 * k, 4))[0]
+                     for base in (FRAME_TABLE_PTRS, CELL_TABLE_PTRS) for k in range(8)})
+    limit = min([x for x in tables if x > t1] + [t1 + 1024]) - t1
+    cells = []
+    for i in range(limit):
+        b = exe_read(exe, t1 + i, 1)
+        if not b or b[0] >= len(frames):
+            break
+        cells.append(b[0])
+    out = Path(a.outdir); out.mkdir(parents=True, exist_ok=True)
+
+    def strip_img(k):
+        # a frame = w*4 halfwords x 16 rows, stored as consecutive pieces of at most 64
+        # halfwords (the LoadImage queue splits wide frames: 2 KB per full piece)
+        w, off = frames[k]
+        total = w * 4
+        img = Image.new("RGBA", (w * 16, 16), (0, 0, 0, 0)); px = img.load()
+        x0 = 0
+        while x0 < total:
+            pw = min(64, total - x0)
+            for y in range(16):
+                for hw in range(pw):
+                    o = off + (y * pw + hw) * 2
+                    v = strips_data[o] | (strips_data[o + 1] << 8)
+                    for q in range(4):
+                        px[(x0 + hw) * 4 + q, y] = rgba[(v >> (4 * q)) & 15]
+            off += pw * 16 * 2
+            x0 += pw
+        return img
+
+    maxw = max(w for w, _ in frames) * 16
+    sheet = Image.new("RGBA", (maxw, len(frames) * 16), (0, 0, 0, 0))
+    lines = []
+    for k in range(len(frames)):
+        sheet.alpha_composite(strip_img(k), (0, k * 16))
+        lines.append(f"frame {k:3d}: offset {frames[k][1]:#7x} width {frames[k][0] * 16:3d} px ({frames[k][0] * 4} halfwords)")
+    sheet.save(out / "frames.png")
+    (out / "frames.txt").write_text("\n".join(lines) + "\n")
+    print(f"frames: {len(frames)} strips -> {out / 'frames.png'} ({sheet.size[0]}x{sheet.size[1]}); {len(cells)} animation cells")
+
+    # assembled poses need the metasprite part lists (STAGE section 5)
+    if a.stage:
+        st = sections(Path(a.stage).read_bytes())
+        s5 = st.get(5)
+        if s5 is None:
+            sys.exit(f"{a.stage}: no section 5")
+        # section 5 = consecutive metasprite groups: {u16 count, u16 offset}[N] header
+        # (offsets group-relative, N = first offset / 4) then the part lists; group 0 =
+        # Mega Man, the others = the stage's objects/enemies/boss (--group)
+        gbase, gi = 0, 0
+        while gi < a.group:
+            n = struct.unpack_from("<H", s5, gbase + 2)[0] // 4
+            hdr = [struct.unpack_from("<HH", s5, gbase + 4 * i) for i in range(n)]
+            gbase = (gbase + max(o + c * 4 for c, o in hdr) + 3) & ~3
+            gi += 1
+        nentries = struct.unpack_from("<H", s5, gbase + 2)[0] // 4
+        canvas_w, canvas_h, ox, oy = 128, 96, 64, 56
+        per_row = 12
+        nposes = min(len(cells), nentries)
+        poses = Image.new("RGBA", (per_row * canvas_w, math.ceil(nposes / per_row) * canvas_h), (0, 0, 0, 0))
+        plines = []
+        for c in range(nposes):
+            count, off = struct.unpack_from("<HH", s5, gbase + 4 * c)
+            parts = [struct.unpack_from("<Hbb", s5, gbase + off + 4 * k) for k in range(count)]
+            fr = strip_img(cells[c])
+            pose = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+            for raw, dx, dy in parts:
+                idx = raw & 0x3FF
+                if idx * 16 + 16 > fr.size[0]:
+                    continue
+                cell = fr.crop((idx * 16, 0, idx * 16 + 16, 16))
+                if raw & 0x8000: cell = cell.transpose(Image.FLIP_LEFT_RIGHT)
+                if raw & 0x4000: cell = cell.transpose(Image.FLIP_TOP_BOTTOM)
+                pose.alpha_composite(cell, (ox + dx, oy + dy))
+            poses.alpha_composite(pose, ((c % per_row) * canvas_w, (c // per_row) * canvas_h))
+            plines.append(f"cell {c:3d}: frame {cells[c]:3d} parts {[(hex(r), dx, dy) for r, dx, dy in parts]}")
+        poses.save(out / "poses.png")
+        (out / "poses.txt").write_text("\n".join(plines) + "\n")
+        print(f"poses: {nposes} animation cells -> {out / 'poses.png'} (origin at +{ox},+{oy} in each {canvas_w}x{canvas_h} cell)")
+    return 0
+
+
 # ── A5: pack ───────────────────────────────────────────────────────────────
 
 def encode_section(indices, nbytes: int, bpp: int = 4) -> bytes:
@@ -415,6 +549,16 @@ def main() -> int:
     e.set_defaults(fn=cmd_extract)
     t = sub.add_parser("tiles"); t.add_argument("pac"); t.add_argument("outdir"); t.set_defaults(fn=cmd_tiles)
     m = sub.add_parser("map"); m.add_argument("pac"); m.add_argument("outdir"); m.set_defaults(fn=cmd_map)
+    sp = sub.add_parser("sprites", help="streamed character sheet: per-frame strips + assembled poses")
+    sp.add_argument("pac", help="sheet PAC (STDATA/PLAYER.PAC)"); sp.add_argument("outdir")
+    sp.add_argument("--exe", default="disc/SLUS_004.53", help="boot EXE holding the frame/cell tables")
+    sp.add_argument("--stage", help="a STDATA stage PAC whose section 5 holds the metasprite part lists (poses.png)")
+    sp.add_argument("--type", type=int, default=0, help="character type (actor+0x49); 0 = Mega Man")
+    sp.add_argument("--sheet-section", type=int, default=1); sp.add_argument("--palette-type", type=int, default=2)
+    sp.add_argument("--clut", type=int, default=0, help="CLUT index inside the palette section (row*16+i; Mega Man: 0 = normal, 1-15 weapons)")
+    sp.add_argument("--palette-pac", help="take the palette section from this PAC instead (bosses: the stage PAC)")
+    sp.add_argument("--group", type=int, default=0, help="metasprite group inside section 5 (0 = Mega Man)")
+    sp.set_defaults(fn=cmd_sprites)
     k = sub.add_parser("pack"); k.add_argument("dir"); k.add_argument("out")
     k.add_argument("--pac", help="original PAC (default: the one recorded in gfx.toml)")
     k.add_argument("--from-tiles", action="store_true", help="take tile pixels from an edited tiles.png")

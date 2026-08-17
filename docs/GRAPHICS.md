@@ -82,7 +82,49 @@ own CLUT (`tiles.png`, 32 per row; `tiles.txt` lists slot/u/v/clut/flags);
 and the rendered map is the playable level (beach → ruins → underground);
 STAGE01/05/0B render likewise (rooms scattered over the 32×32 grid).
 
-### Sprites (partly decoded)
+### Sprites — streamed characters (A3b: player done, bosses' strips done)
+
+Found by write-tracing the strip pointer (`wtrace_arm 0x80171038`): the
+LoadImage queue routine `0x8010B940` (entries `{src, x, y, w, h}` at
+`0x80171038 + 12n`, splitting frames wider than 64 halfwords into consecutive
+64-halfword pieces of 2 KB) is fed by `0x80103180`:
+
+```
+type   = actor+0x49                                  (0 = Mega Man, 1 = PLAYER sec 3, 2..7 = Robot Masters)
+cell   = actor+0x2E & 0xFFF                          (animation cell)
+T1     = *(0x8013A428 + 4*type)  : u8[]  cell  -> frame id
+T2     = *(0x8013A3F4 + 4*type)  : u32[] frame -> (width_units << 24) | strip offset
+src    = actor+0x4C (sheet base in RAM) + offset;  width = width_units * 4 halfwords (= 16 px cells), 16 rows
+dest   = actor+0x2C (packed VRAM slot; Mega Man: (320,192))
+```
+
+Frames are stored back to back, so T2 exactly tiles the sheet: **Mega Man =
+131 frames = `PLAYER.PAC` section 1** (193,280 B); type 1 = 21 frames = PLAYER
+section 3; types 2–7 = the Robot Masters' section 17 (BOSSTNG/FRO/GRE/AQU/CLO/DUO
+.PAC and the `STAGExxB.PAC` copies: 28/22/10/26/22/24 frames). A frame wider
+than 64 halfwords is stored as 64-wide pieces (row stride = piece width).
+
+Metasprites: **section 5 is a sequence of groups** — each `{u16 count, u16
+offset}[N]` header (offsets group-relative, N = first offset / 4) followed by
+its part lists `{u16 cell, s8 dx, s8 dy}`; the file is fully consumed by 26–27
+groups per stage. **Group 0 = Mega Man** (302 entries, one per animation cell:
+`cell c → strip T1[c], parts group0[c]`; parts index 16-px cells of the strip,
+`u = 16·idx`; bit 15 / 14 of the cell word = H/V flip). Verified against the
+live frame (cells 28/29 = strip 14 with/without the arm cell).
+
+`tools/pac_gfx.py sprites PLAYER.PAC out/ --stage STAGE00.PAC` renders
+`frames.png` (all strips, in CLUT 0 of PLAYER section 2 = the in-game
+palette; `--clut 1..15` = weapon colours) and `poses.png` (all 302 animation
+cells assembled). `--type 5 --sheet-section 17` on `BOSSAQU.PAC` renders Aqua
+Man's 26 strips (`frames.png`; grey ramp until his CLUT is known — pass
+`--palette-pac/--clut`).
+
+⬜ Open: which section-5 group belongs to which enemy/boss (an actor→group
+table, plus the boss CLUT); enemy sprites drawn from the section-258 pages
+(their cell words presumably carry page/CLUT bits). `--group N` renders any
+group's lists against a strip sheet for experiments.
+
+### Sprites — earlier notes
 
 * **Player**: every animation frame is a 16-px-tall *strip* (24–64 halfwords
   = 48–128 px wide, 4bpp) inside `PLAYER.PAC` section 1 (all strips back to
@@ -163,8 +205,8 @@ parts; 258: enemies), which is the proof of the map above.
 
 ## Next (ROADMAP A3b–A5)
 
-* A3b sprite frame tables (player strips, enemy metasprite cells) — see the
-  open item above; tiles are done.
+* A3b: player + Robot-Master strips done; enemy/boss metasprite groups and
+  page-based enemy sprites open (see above).
 * A5 done (above). Not yet: writing an edited `map_layer*.png` back (needs
   tile matching against the definition set — a level-editor feature), and
   8bpp sections should any PAC turn out to use them.
