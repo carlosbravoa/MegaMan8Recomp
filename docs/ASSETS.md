@@ -12,7 +12,7 @@ This page maps the disc to formats and tools.
 | `SLUS_004.53` | boot EXE (the recompiled target) | PS-X EXE | code changes go through the recompiler / mods, not by editing the file |
 | `SYSTEM.CNF` | boot config | text | — |
 | `OVL/DEMO.BIN`, `OVL/STAGE00..0D.BIN` | streamed engine/stage code overlays (loaded at `0x801D8000`) | raw MIPS + pointer header (`first u32` = id 5..19) | overlay work: see the framework overlay pipeline |
-| `STDATA/*.PAC` (48) | stage / boss / player / cutscene graphics + layout data | **PAC container** (below) | `tools/pac_tool.py unpack/pack` |
+| `STDATA/*.PAC` (44) | stage / boss / player / cutscene graphics + layout data | **PAC container** (below); graphics = 4bpp page columns + CLUT16 palettes, tile maps/blocks/defs (`docs/GRAPHICS.md`) | `tools/pac_gfx.py extract/tiles/map/pack` (PNG in/out), `tools/pac_tool.py unpack/pack` (raw sections) |
 | `SOUND/PBGM00..45.PAC` (70), `SOUND/PCOMMON.PAC` | sequenced music + sample banks / common SFX bank | PAC of PsyQ **SEQ / VAB (VH + VB)** | `pac_tool.py`, then any PsyQ SEQ/VAB tool (vgmtrans, PSound, seq2mid, VAB → WAV) |
 | `MOVIE/CAPCOM15.STR`, `MOVIE/ROCK8_0..4.STR` | Capcom logo + the five anime cutscenes | STR (MDEC video Form 1 + XA-ADPCM audio Form 2, **raw 2336 B/sector in the tree**) | jPSXdec (decode / replace frames & audio; keep 2336-byte sector output), MC32/mkpsxiso `str` tools |
 | `END1.DA` → track 02, `ZNULL.DAT` → track 03 | Red Book CD audio | `audio/track02.wav`, `audio/track03.wav` (44.1 kHz s16 stereo) | any audio editor; drop the WAV in place (other rates/mono are converted at mount) |
@@ -66,13 +66,9 @@ Sections carry no names; `pac_tool.py unpack` writes `NN_typeT.bin` +
 | 18 | 0x563–0xBA1 | 16-bit values |
 | 256–260 | 0x8000–0x58000 | **pixel data** (raw 4/8 bpp texture pages, no TIM header): 258 in 41 PACs, 259 in 31 |
 
-The graphics are palette + raw VRAM pages, uploaded by the stage loader
-(`StageModuleLoad` = `0x801014E8`) with geometry that lives in the game code,
-not in the data — decoding them to PNG needs the upload/tile RE that
-`docs/WIDESCREEN.md`'s bg2d notes started (`0x80171C3C` tile definitions,
-16×16 blocks of 512 bytes). Until then, edits at the byte level (palette
-swaps in type 9, pixel edits in 258/259 with a VRAM-page-aware editor) are
-already possible and served through the tree.
+The graphics pipeline is decoded in `docs/GRAPHICS.md` (VRAM map, tile
+maps → blocks → definitions → page columns, palettes) and `tools/pac_gfx.py`
+turns it into PNGs and back (`extract`, `tiles`, `map`, `pack`).
 
 ## Workflows
 

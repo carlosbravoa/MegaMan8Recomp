@@ -105,6 +105,41 @@ STAGE01/05/0B render likewise (rooms scattered over the 32×32 grid).
   section 258 sheets are cut by their metasprite cells; the cell→(u,v) rule
   is presumably `u = 16*(idx & 15)`, `v = 16*(idx >> 4)` per page — unverified.
 
+## A5 — writing graphics back (`tools/pac_gfx.py pack`)
+
+`extract` now also writes `palette_block.png` (one pixel per BGR555 entry,
+256 wide × rows) and `gfx.toml` (source PAC, palette section, pixel sections);
+`pack DIR NEW.PAC [--from-tiles]` rebuilds the container: pixel sections
+from the indexed `sec<T>_idx.png` (the PNG's palette *indices* are the 4bpp
+pixels — keep them indexed), palette from `palette_block.png` (untouched
+entries keep their exact bits, edited ones keep the STP bit), or — with
+`--from-tiles` — every tile definition's 16×16 pixels from an edited
+`tiles.png`, quantised against that tile's own CLUT (exact colours expected;
+nearest with a note otherwise; conflicting edits to a page cell shared by two
+definitions are reported). All 44 STDATA PACs round-trip byte-identical
+through extract → pack (and STAGE00 through `--from-tiles`).
+
+Palette facts learned on the way: `PLAYER.PAC` section 2 (512 B, extract
+with `--palette-type 2`) is Mega Man's palette row — **CLUT 0 = normal, CLUTs
+1–15 = weapon colours**; the game copies the active one into VRAM row 0 / CLUT
+8 (`0x7808`) itself (that is one of the "computed" 256×8 uploads). Each
+stage's section 9 row 0 also carries a copy of CLUT 0 without the STP bit
+(row 0 / 8), unused for the in-game player. Verified: swapping R↔B in section
+2 CLUT 0, `pack`, cold boot from the tree → orange Mega Man in the intro
+stage; editing only the stage copy changes nothing.
+
+Workflow:
+
+```sh
+python3 tools/pac_gfx.py extract game-assets/disc/cdrom/STDATA/PLAYER.PAC work/player --palette-type 2
+#   edit work/player/palette_block.png (entries 0..15 = CLUT 0)
+python3 tools/pac_gfx.py pack work/player game-assets/disc/cdrom/STDATA/PLAYER.PAC
+python3 tools/pac_gfx.py extract game-assets/disc/cdrom/STDATA/STAGE00.PAC work/st00 && python3 tools/pac_gfx.py tiles ... work/st00
+#   edit work/st00/tiles.png (each tile in its own colours) or sec259_idx.png (indices) or palette_block.png
+python3 tools/pac_gfx.py pack work/st00 game-assets/disc/cdrom/STDATA/STAGE00.PAC --from-tiles
+bash tools/run_mm8.sh          # or a headless screenshot; `bash tools/extract_disc.sh --force` restores pristine
+```
+
 ## Rendering a section (what `tools/pac_gfx.py extract` does)
 
 ```
@@ -123,15 +158,13 @@ parts; 258: enemies), which is the proof of the map above.
 |---|---|
 | runtime `vram_upload_log` (debug server; framework) | `{"op":"arm","dir":D}` dumps every upload payload; `list` returns `{seq,frame,x,y,w,h,crc,fw}` |
 | `tools/vram_map.py DUMP_DIR [--skip-fmv] [--json out]` | payload → disc file / PAC section / offset |
-| `tools/pac_gfx.py extract PAC OUT` | sections → PNG (+ palettes) |
+| `tools/pac_gfx.py extract / tiles / map / pack` | sections → PNG (+ palettes), tile sheet, stage maps, PNG → PAC |
 | `tools/pac_tool.py` | container list/unpack/pack |
 
 ## Next (ROADMAP A3b–A5)
 
 * A3b sprite frame tables (player strips, enemy metasprite cells) — see the
   open item above; tiles are done.
-* A5 `pac_gfx.py pack`: PNG → indexed pixels against a recorded CLUT → chunks
-  → section (byte-identical round trip on untouched art); with the tile
-  pipeline decoded, `tiles.png` / `map_layer*.png` edits can be written back
-  through defs + pages. Palette recolours (section 9) are the first
-  end-to-end edit.
+* A5 done (above). Not yet: writing an edited `map_layer*.png` back (needs
+  tile matching against the definition set — a level-editor feature), and
+  8bpp sections should any PAC turn out to use them.

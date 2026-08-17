@@ -28,7 +28,16 @@ rows 4–7 of section 9) → `tiles.png` (32 per row) + `tiles.txt`.
 3 (512-byte blocks = 16×16 u16 entries: def id | 0x1000 OT group | 0x2000
 semi-transparent) → `map_layer<N>.png` (RGBA, transparent where empty),
 cropped to the used blocks; `map.txt` lists the block grid.
-`pack` (PNG → PAC) is the next step and is not here yet.
+    pac_gfx.py pack    OUTDIR NEW.PAC [--pac ORIGINAL.PAC] [--from-tiles]
+
+`pack` rebuilds the PAC from an extract directory: pixel sections from
+`sec<T>_idx.png` (the palette *indices* of the PNG are the pixels — edit them
+in an indexed-colour editor, or use `--from-tiles` to take each tile
+definition's 16×16 pixels from an edited `tiles.png` and quantise them against
+that tile's own CLUT), the palette block from `palette_block.png` (one pixel
+per BGR555 entry; the STP bit of every entry is kept from the original),
+every other section verbatim from the original PAC (path recorded in
+`gfx.toml`, or --pac). Untouched art round-trips byte-identical.
 """
 
 from __future__ import annotations
@@ -94,16 +103,23 @@ def cmd_extract(a) -> int:
     out = Path(a.outdir)
     out.mkdir(parents=True, exist_ok=True)
     row, idx = (int(v) for v in a.clut.split(":"))
-    pal = secs.get(9)
+    ptype = a.palette_type if a.palette_type is not None else 9
+    pal = secs.get(ptype)
+    if pal is not None and len(pal) % 512:
+        sys.exit(f"section {ptype} is {len(pal)} bytes — not a palette block (multiple of 512)")
     if pal is None:
         print("no palette section (type 9) — indexed PNGs get a grey ramp", file=sys.stderr)
         colors = [(i * 17, i * 17, i * 17) for i in range(16)]
     else:
+        prow = len(pal) // 512
+        if row >= prow:
+            print(f"palette has {prow} row(s); using row 0 for the preview CLUT", file=sys.stderr)
+            row = 0
         colors = clut16(pal, row, idx)
-        # swatch sheet: 8 rows x 16 CLUTs x 16 entries
-        sw = Image.new("RGB", (256 * 8, 8 * 16))
+        # swatch sheet: rows x 16 CLUTs x 16 entries
+        sw = Image.new("RGB", (256 * 8, prow * 16))
         lines = []
-        for r in range(8):
+        for r in range(prow):
             for c in range(16):
                 cl = clut16(pal, r, c)
                 for i, rgb in enumerate(cl):
@@ -114,6 +130,18 @@ def cmd_extract(a) -> int:
         sw.save(out / "palettes.png")
         (out / "palettes.txt").write_text("\n".join(lines) + "\n")
     flat = [v for rgb in colors for v in rgb]
+    manifest = [f"# written by tools/pac_gfx.py extract — input for `pac_gfx.py pack`",
+                f'source = "{Path(a.pac).resolve()}"', f'source_name = "{Path(a.pac).name}"',
+                f"bpp = {a.bpp}", ""]
+    if pal is not None:
+        # editable palette block: one pixel per entry (256 wide, one row per 256-entry row)
+        rows = len(pal) // 512
+        pb = Image.new("RGB", (256, rows))
+        for r in range(rows):
+            for i in range(256):
+                pb.putpixel((i, r), bgr555_rgb(struct.unpack_from("<H", pal, (r * 256 + i) * 2)[0]))
+        pb.save(out / "palette_block.png")
+        manifest += ["[palette]", f"type = {ptype}", 'file = "palette_block.png"', f"rows = {rows}", ""]
     for t in PIXEL_TYPES:
         if t not in secs:
             continue
@@ -124,7 +152,9 @@ def cmd_extract(a) -> int:
         gray = img.copy()
         gray.putpalette([c for i in range(n_idx) for c in (i * (255 // (n_idx - 1)),) * 3] + [0] * (768 - n_idx * 3))
         gray.save(out / f"sec{t}_gray.png")
+        manifest += ["[[pixels]]", f"type = {t}", f'file = "sec{t}_idx.png"', f"size = {len(secs[t])}", ""]
         print(f"sec{t}: {len(secs[t])} bytes -> {img.size[0]}x{img.size[1]} px @{a.bpp}bpp")
+    (out / "gfx.toml").write_text("\n".join(manifest) + "\n")
     return 0
 
 
@@ -240,6 +270,139 @@ def cmd_map(a) -> int:
     return 0
 
 
+# ── A5: pack ───────────────────────────────────────────────────────────────
+
+def encode_section(indices, nbytes: int, bpp: int = 4) -> bytes:
+    """Inverse of render_section: indices[y][x] over (ncols*64*ppw) x 256 -> chunk stream of nbytes."""
+    ppw = 4 if bpp == 4 else 2
+    chunks = nbytes // 0x800
+    out = bytearray(chunks * 0x800)
+    for k in range(chunks):
+        col, row0 = k // 16, (k % 16) * 16
+        base = k * 0x800
+        for r in range(16):
+            row = indices[row0 + r]
+            for hw in range(64):
+                x = col * 64 * ppw + hw * ppw
+                if bpp == 4:
+                    v = row[x] | (row[x + 1] << 4) | (row[x + 2] << 8) | (row[x + 3] << 12)
+                else:
+                    v = row[x] | (row[x + 1] << 8)
+                o = base + (r * 64 + hw) * 2
+                out[o] = v & 0xFF; out[o + 1] = v >> 8
+    return bytes(out)
+
+
+def rgb_bgr555(rgb) -> int:
+    r, g, b = rgb[:3]
+    return ((r * 31 + 127) // 255) | (((g * 31 + 127) // 255) << 5) | (((b * 31 + 127) // 255) << 10)
+
+
+def cmd_pack(a) -> int:
+    import tomllib
+    sys.path.insert(0, str(Path(__file__).parent))
+    from pac_tool import parse as pac_parse, build as pac_build   # container codec
+    d = Path(a.dir)
+    with open(d / "gfx.toml", "rb") as f:
+        m = tomllib.load(f)
+    src = Path(a.pac) if a.pac else Path(m["source"])
+    if not src.exists():
+        sys.exit(f"original PAC not found: {src} (pass --pac)")
+    data = src.read_bytes()
+    _count, _total, plist, _end = pac_parse(data)
+    secs = {t: data[off:off + sz] for t, off, sz in plist}
+    bpp = int(m.get("bpp", 4))
+    ppw = 4 if bpp == 4 else 2
+    warnings = 0
+
+    # palette
+    pal = None
+    if "palette" in m and (d / m["palette"]["file"]).exists():
+        pt = int(m["palette"]["type"])
+        orig = secs.get(pt)
+        pb = Image.open(d / m["palette"]["file"]).convert("RGB")
+        rows = pb.size[1]
+        new = bytearray(rows * 512)
+        for r in range(rows):
+            for i in range(256):
+                v = rgb_bgr555(pb.getpixel((i, r)))
+                if orig is not None and (r * 256 + i) * 2 + 1 < len(orig):
+                    ov = struct.unpack_from("<H", orig, (r * 256 + i) * 2)[0]
+                    if bgr555_rgb(ov) == pb.getpixel((i, r)):
+                        v = ov                       # untouched entry: keep exact bits (STP)
+                    else:
+                        v |= ov & 0x8000             # edited: keep its STP bit
+                struct.pack_into("<H", new, (r * 256 + i) * 2, v)
+        secs[pt] = bytes(new)
+        pal = bytes(new)
+
+    # pixel sections from the indexed PNGs
+    pixels = {}
+    for px in m.get("pixels", []):
+        t = int(px["type"])
+        img = Image.open(d / px["file"])
+        if img.mode != "P":
+            sys.exit(f"{px['file']}: must stay an indexed-colour (mode P) PNG — the indices are the pixels")
+        w, h = img.size
+        idx = [[img.getpixel((x, y)) for x in range(w)] for y in range(h)]
+        pixels[t] = (idx, int(px["size"]))
+
+    # optional: overlay tile edits from tiles.png
+    if a.from_tiles:
+        tiles_png = d / "tiles.png"
+        if not tiles_png.exists():
+            sys.exit("--from-tiles: tiles.png not found in the extract dir (run `pac_gfx.py tiles` first)")
+        defs = secs.get(4, b"")
+        pal_src = pal if pal is not None else secs.get(9)
+        if 259 not in pixels or pal_src is None:
+            sys.exit("--from-tiles needs section 259 and a palette section")
+        sheet = Image.open(tiles_png).convert("RGBA")
+        per_row = 32
+        idx259, _ = pixels[259]
+        written = {}
+        ndef = len(defs) // 4
+        nearest_used = 0
+        for i in range(ndef):
+            uvb, slot, cb, _fl = struct.unpack_from("<BBBB", defs, i * 4)
+            u, v, slot = (uvb & 0xF) << 4, uvb & 0xF0, slot & 7
+            cl = clut_from_byte(pal_src, cb)
+            lut = {c[:3]: k for k, c in reversed(list(enumerate(cl)))}
+            sx, sy = (i % per_row) * 16, (i // per_row) * 16
+            if sx + 16 > sheet.size[0] or sy + 16 > sheet.size[1]:
+                continue
+            for yy in range(16):
+                for xx in range(16):
+                    r, g, b, al = sheet.getpixel((sx + xx, sy + yy))
+                    if al == 0:
+                        k = 0
+                    elif (r, g, b) in lut:
+                        k = lut[(r, g, b)]
+                    else:
+                        k = min(range(16), key=lambda q: (cl[q][0] - r) ** 2 + (cl[q][1] - g) ** 2 + (cl[q][2] - b) ** 2)
+                        nearest_used += 1
+                    X, Y = slot * 64 * ppw + u + xx, v + yy
+                    if Y < len(idx259) and X < len(idx259[0]):
+                        key = (X, Y)
+                        if key in written and written[key] != k:
+                            warnings += 1
+                            if warnings <= 5:
+                                print(f"warning: tile def {i} disagrees with an earlier def on shared pixel {key} (page cell reused with another palette); last one wins", file=sys.stderr)
+                        written[key] = k
+                        idx259[Y][X] = k
+        if nearest_used:
+            print(f"note: {nearest_used} pixels of tiles.png were not exact CLUT colours and were quantised to the nearest entry", file=sys.stderr)
+
+    for t, (idx, size) in pixels.items():
+        secs[t] = encode_section(idx, size, bpp)
+
+    rebuilt = pac_build([(t, secs[t]) for t, _off, _sz in plist])
+    Path(a.out).write_bytes(rebuilt)
+    same = rebuilt == data
+    print(f"packed {a.out}: {len(rebuilt)} bytes ({'identical to the original' if same else 'modified'})"
+          + (f", {warnings} shared-cell conflicts" if warnings else ""))
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -247,9 +410,15 @@ def main() -> int:
     e.add_argument("pac"); e.add_argument("outdir")
     e.add_argument("--clut", default="4:2", help="palette ROW:INDEX (row 0-7, index 0-15)")
     e.add_argument("--bpp", type=int, default=4, choices=(4, 8))
+    e.add_argument("--palette-type", type=int, default=None,
+                   help="section type holding the palette block (default 9; PLAYER.PAC keeps its 16 CLUTs in type 2)")
     e.set_defaults(fn=cmd_extract)
     t = sub.add_parser("tiles"); t.add_argument("pac"); t.add_argument("outdir"); t.set_defaults(fn=cmd_tiles)
     m = sub.add_parser("map"); m.add_argument("pac"); m.add_argument("outdir"); m.set_defaults(fn=cmd_map)
+    k = sub.add_parser("pack"); k.add_argument("dir"); k.add_argument("out")
+    k.add_argument("--pac", help="original PAC (default: the one recorded in gfx.toml)")
+    k.add_argument("--from-tiles", action="store_true", help="take tile pixels from an edited tiles.png")
+    k.set_defaults(fn=cmd_pack)
     a = ap.parse_args()
     return a.fn(a)
 

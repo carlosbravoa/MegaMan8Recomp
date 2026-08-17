@@ -43,13 +43,13 @@ tables in sections 4–8/10–15), not in the data.
 | A1 | Map PAC sections → VRAM rects | ✅ **done** (`docs/GRAPHICS.md`): framework `vram_upload_log` + `tools/vram_map.py`; sections stream in 2 KB chunks (64 hw × 16 rows) → column ⌊k/16⌋ / row 16·(k mod 16) of a base rect: 258 → (512,0), 259 → (512,256), COMNCHAR 256/257/260 → (320,0)/(320,256)/(384,256), palette block 9 → (0,480), player frames streamed to (320,192). Graphics are uncompressed. | done |
 | A2 | Determine bit depth + CLUT per rect | ✅ intro stage: everything 4bpp; CLUT = 16-entry segment `(16·i, 480+row)` of the section-9 block (128 CLUT16s). ⬜ confirm for boss/cutscene PACs (8bpp?). | mostly done |
 | A3 | Sprite / tile *definitions* | ✅ **tiles done** (`docs/GRAPHICS.md`): layer maps (sec 0/1/2, 32×32 block ids) → blocks (sec 3) → tile defs (sec 4: uv, page slot, clut, flags) → page columns of sec 259; `pac_gfx.py tiles` / `map` render tile sheets and full stage maps from the PAC alone. 🔧 sprites: metasprite part format `(cell, dx, dy)` (sec 5) and the player strip streaming decoded; ⬜ A3b frame→strip table (animation scripts, Ghidra). | tiles done; sprites medium |
-| A4 | `tools/pac_gfx.py extract` | 🔧 first cut done: section → PNG (one CLUT applied + grey index) and the 128-CLUT swatch sheet. ⬜ per-sprite cutting once A3 lands; ⬜ round-trip test with A5. | small |
-| A5 | `tools/pac_gfx.py pack` | PNG → indexed pixels against the recorded CLUT (error out on colours outside the palette or with a `--requantize`); repack sections; verify with `psx-disc-tree layout` + headless screenshot. Palette-only edits (recolours) are the first thing that will work end to end. | small |
+| A4 | `tools/pac_gfx.py extract` | ✅ section → PNG (indexed + grey), palette block + swatches, `tiles` (every def in its own CLUT), `map` (full stage layers). ⬜ per-sprite sheets (needs A3b). | done |
+| A5 | `tools/pac_gfx.py pack` | ✅ indexed PNGs / `palette_block.png` / `--from-tiles tiles.png` → PAC; all 44 STDATA PACs round-trip byte-identical; **recolour of Mega Man (PLAYER.PAC sec 2 CLUT 0) verified in game from a cold boot off the tree**. ⬜ map write-back (tile matching), 8bpp. | done |
 | A6 | Docs: `docs/GRAPHICS.md` — page maps per PAC type, sprite tables, limits (VRAM page budget, palette rules) | small |
 
-Deliverable check: recolour Mega Man's palette in `PLAYER.PAC`, repack, boot
-headless into the intro stage, screenshot shows the recolour; `extract` →
-`pack` of every PAC round-trips byte-identical.
+Deliverable check ✅ (2026-08-17): Mega Man recoloured via `PLAYER.PAC`
+section 2 CLUT 0, repacked, cold boot headless into the intro stage shows the
+new colours; `extract` → `pack` of every STDATA PAC round-trips byte-identical.
 
 ## 2. Track B — Upscaled graphics in the framework (the long road)
 

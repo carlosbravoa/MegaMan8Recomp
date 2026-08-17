@@ -55,7 +55,7 @@ On-disc layout of note (data track):
   — streamed code overlays loaded into RAM and executed per stage. Out of scope
   for the static EXE recompile; captured by the runtime's overlay-cache
   pipeline (dirty-RAM capture → `compile_overlays.py` shards).
-- `STDATA/*.PAC` (48 archives: `STAGE00..0D[B].PAC`, `BOSS*.PAC`, `PLAYER.PAC`,
+- `STDATA/*.PAC` (44 archives: `STAGE00..0D[B].PAC`, `BOSS*.PAC`, `PLAYER.PAC`,
   `SELECT.PAC`, `LABO.PAC`, `WILY.PAC`, `PDEMO00..04.PAC`, `ENDING.PAC`, …) —
   stage / character asset packs.
 - `SOUND/PBGM00..45.PAC`, `SOUND/PCOMMON.PAC` — SPU sound banks / sequenced BGM.
@@ -79,7 +79,7 @@ On-disc layout of note (data track):
 strings). It reads by sector number from a table at **`0x80136F7C`**: 139
 entries × 12 bytes `{u32 lba, u32 size, u32 first_word}`, one per file in ISO
 directory order (SLUS, SYSTEM.CNF, 6× MOVIE/*.STR, 15× OVL/*.BIN, 71×
-SOUND/*.PAC, 48× STDATA/*.PAC, END1.DA). `size` is the byte size for data
+SOUND/*.PAC, 44× STDATA/*.PAC, END1.DA). `size` is the byte size for data
 files and **sectors × 2336** for the STRs (raw DMA length); `first_word` is
 the file's first 32-bit word (a load-time sanity check: `PS-X` for the EXE,
 `BOOT` for SYSTEM.CNF, `5..19` for the overlays, `4` for the PBGM banks).
