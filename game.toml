@@ -14,6 +14,29 @@ entry_pc = "0x800C0B3C"
 text_size = "0x00113000"
 stack_base = "0x801FFFF0"
 
+# ── Extracted disc tree (psxrecomp/docs/DISC_TREE.md) ──────────────────────
+# `bash tools/extract_disc.sh` unpacks the dump into game-assets/disc/ (cdrom/
+# = the 140 ISO files, audio/trackNN.wav = the two CD-DA tracks, meta/ = licence
+# area + PVD). When that directory exists the runtime mounts IT instead of the
+# bin/cue — the disc is re-synthesised sector by sector, byte-identical to the
+# dump while the tree is pristine (`psx-disc-tree verify` proves it), and files
+# edited/replaced/added under cdrom/ are served in place. PSX_DISC_TREE=0 forces
+# the image; --disc always wins. Everything under game-assets/ stays local.
+[disc_tree]
+dir = "game-assets/disc"
+# MM8 never looks files up by name: the EXE carries a table of {u32 LBA, u32
+# size, u32 first-word} triplets at 0x80136F7C, one per disc file in ISO order
+# (SLUS, SYSTEM.CNF, 6 STR, 15 OVL, 71 SOUND, 48 STDATA, END1.DA = 139). When
+# the tree relocates or resizes a file, the mounter rewrites that file's entry
+# in the served EXE (size in the entry's own unit: bytes for data files,
+# sectors x 2336 for STRs) and blesses the bytes in the text-image guard.
+[[disc_tree.lba_table]]
+address = "0x80136F7C"
+count = 139
+stride = 12
+lba_offset = 0
+size_offset = 4
+
 # Digests are for data Track 01 (first BINARY FILE / TRACK 01).
 [prepare_disc]
 out_dir = "disc"

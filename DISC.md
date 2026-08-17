@@ -61,10 +61,40 @@ On-disc layout of note (data track):
 - `SOUND/PBGM00..45.PAC`, `SOUND/PCOMMON.PAC` — SPU sound banks / sequenced BGM.
 - `MOVIE/CAPCOM15.STR`, `MOVIE/ROCK8_0..4.STR` — MDEC movies (Capcom logo +
   the five animated cutscenes; 2–76 MB each).
-- `END1.DA` (40 MB, LBA 142246) — streamed audio data for the ending.
-- `ZNULL.DAT` — 32 MB null-padding file (disc layout filler).
-- Tracks 02/03 — Red Book CD-DA (the game plays these directly through the CD
-  audio path; the runtime needs the multi-track cue to serve them).
+- `END1.DA` (LBA 142246) and `ZNULL.DAT` (LBA 162242) — **not data files**:
+  ISO9660 records with the XA "CD-DA" attribute (0x4555) whose extents ARE
+  tracks 02 and 03 (INDEX 01 of each; sizes = payload sectors × 2048). This is
+  how the game addresses the Red Book audio — by the LBA in these records —
+  so the multi-track cue (or the extracted tree) is required to serve them.
+- Tracks 02/03 — Red Book CD-DA (19,996 / 15,900 sectors incl. 150-sector
+  pregaps; both pregaps silent).
+- The 149 sectors after `W_DEVIL.PAC` are empty (Mode 2, zero subheader, zero
+  EDC/ECC); the very last sector of the track (LBA 142095) is an empty sector
+  whose ECC was computed over the header — a burner artefact, kept raw in the
+  tree as `meta/raw_142095_1.bin`.
+
+## How the game finds files: the LBA table
+
+`SLUS_004.53` contains **no filenames** (no `cdrom:\`, no `.PAC`/`.BIN`
+strings). It reads by sector number from a table at **`0x80136F7C`**: 139
+entries × 12 bytes `{u32 lba, u32 size, u32 first_word}`, one per file in ISO
+directory order (SLUS, SYSTEM.CNF, 6× MOVIE/*.STR, 15× OVL/*.BIN, 71×
+SOUND/*.PAC, 48× STDATA/*.PAC, END1.DA). `size` is the byte size for data
+files and **sectors × 2336** for the STRs (raw DMA length); `first_word` is
+the file's first 32-bit word (a load-time sanity check: `PS-X` for the EXE,
+`BOOT` for SYSTEM.CNF, `5..19` for the overlays, `4` for the PBGM banks).
+The disc-tree mounter patches this table when a file moves (`[disc_tree]
+lba_table` in `game.toml`).
+
+## Extracted disc tree
+
+`bash tools/extract_disc.sh` unpacks the dump into `game-assets/disc/`
+(cdrom/ = the 140 files, audio/track02-03.wav, meta/, disc.toml). The runtime
+mounts the tree instead of the cue when it exists (`[disc_tree] dir`); an
+untouched tree is byte-identical to the dump — `psx-disc-tree verify` compares
+all 177,992 sectors — and edited/added files are served in place. See
+`psxrecomp/docs/DISC_TREE.md`. The tree is copyrighted game data: gitignored
+with the rest of `game-assets/`.
 
 Disc image and extracted EXE are local-only (gitignored); recreate from the
 source dump if missing (`disc/SLUS_004.53` is re-extracted by

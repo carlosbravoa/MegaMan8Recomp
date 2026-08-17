@@ -41,10 +41,22 @@ done
 exe=$root/$build_dir/MegaMan8_Recompiled
 game=$root/game.toml
 bios=${MM8_BIOS:-$root/game-assets/psx-bios-SCPH1001/scph1001.bin}
-disc=${MM8_DISC:-$root/game-assets/Mega Man 8 (USA)/Mega Man 8 (USA).cue}
+# Disc source, in order: MM8_DISC (explicit image or tree), the extracted disc
+# tree game-assets/disc/ (tools/extract_disc.sh; psxrecomp/docs/DISC_TREE.md)
+# unless MM8_USE_IMAGE=1, else the bin/cue dump.
+image="$root/game-assets/Mega Man 8 (USA)/Mega Man 8 (USA).cue"
+tree=$root/game-assets/disc
+if [ -n "${MM8_DISC:-}" ]; then
+    disc=$MM8_DISC
+elif [ "${MM8_USE_IMAGE:-0}" != 1 ] && [ -f "$tree/disc.toml" ]; then
+    disc=$tree
+else
+    disc=$image
+fi
 
 [ -x "$exe" ]  || { echo "exe not found: $exe (build first — see CLAUDE.md)" >&2; exit 1; }
-[ -f "$disc" ] || { echo "disc not found: $disc" >&2; exit 1; }
+[ -e "$disc" ] || { echo "disc not found: $disc" >&2; exit 1; }
+echo "run_mm8: disc source: $disc" >&2
 if [ "$use_openbios" = 0 ]; then
     if [ -f "$bios" ]; then
         bios_args=(--bios "$bios")

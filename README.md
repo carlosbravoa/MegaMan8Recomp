@@ -122,13 +122,35 @@ game-assets/psx-bios-SCPH1001/scph1001.bin
 Then:
 
 ```sh
-git submodule update --init --recursive
+git submodule update --init --recursive          # psxrecomp + recomp-ui from the carlosbravoa forks, branch mm8
 bash psxrecomp/tools/ci/build_emitters.sh        # psxrecomp-game + psxrecomp-bios → build-recompiler/
 bash tools/regen.sh                              # BIOS backends + generated/SLUS_004.53_*.c
 cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build-release --target psx-runtime -j"$(nproc)"
+cmake --build build-release --target psx-runtime -j"$(nproc)"   # also builds build-release/psx-disc-tree
 bash tools/run_mm8.sh                            # or: build-release/MegaMan8_Recompiled --game game.toml --disc "<cue>" [--bios <BIN>]
 ```
+
+The framework submodules are pinned to branch `mm8` of the
+`carlosbravoa/psxrecomp` and `carlosbravoa/recomp-ui` forks: upstream
+`mstan/*` plus the fixes this title needs that are not merged upstream yet
+(depth24 movie fix, bg2d startcol, POSIX autocompile, video filters, bug-report
+bundles, headless scripts, extracted disc trees — see `upstream/README.md`).
+`git submodule update` gives you exactly that state; nothing to patch.
+
+### Running from extracted files (no disc image needed after this)
+
+```sh
+bash tools/extract_disc.sh       # dump → game-assets/disc/ (~2 s), then proves it byte-identical
+bash tools/run_mm8.sh            # mounts game-assets/disc/ instead of the .cue
+```
+
+`game-assets/disc/cdrom/` holds every disc file as a plain file, `audio/` the
+two CD-DA tracks as WAV. Edit, replace or add files there and the game serves
+them (see `docs/ASSETS.md`, `psxrecomp/docs/DISC_TREE.md`); `python3
+psxrecomp/tools/disc_tree.py status game-assets/disc` shows what you changed,
+`bash tools/extract_disc.sh --force` restores the pristine tree,
+`MM8_USE_IMAGE=1 bash tools/run_mm8.sh` runs from the .cue again. Needs
+Python ≥ 3.11 (`tomllib`).
 
 `tools/regen.sh` wraps `python3 psxrecomp/psxrecomp_cli.py generate --config
 game.toml --project-root . --disc "<cue>" [--bios <BIN>]`. For a debug build with

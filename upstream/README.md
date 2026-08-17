@@ -1,75 +1,62 @@
-# Pending upstream (framework) changes
+# Pending upstream (framework) changes — the `mm8` fork branches
 
-Fixes that belong in **`mstan/psxrecomp`**, not in this game repo (per
-`CLAUDE.md`: "Codegen/runtime fixes belong in the framework … A fix that only
-this game needs is a smell; prefer a class fix that the next title inherits").
+Fixes that belong in **`mstan/psxrecomp`** / **`mstan/recomp-ui`**, not in
+this game repo (per `CLAUDE.md`: "Codegen/runtime fixes belong in the
+framework … prefer a class fix that the next title inherits").
 
-They are parked here as patch files so a `git submodule update` — which
-silently reverts an uncommitted submodule working tree — cannot destroy them.
+They live as **real commits on fork branches**, and the game's submodules are
+pinned to them:
 
-## Status
+| submodule | pinned to | = upstream + |
+|---|---|---|
+| `psxrecomp` | `carlosbravoa/psxrecomp` branch **`mm8`** (`2276657`) | `mstan/psxrecomp` `dca482e` + 5 commits (§1–7 below) |
+| `recomp-ui` | `carlosbravoa/recomp-ui` branch **`mm8`** (`4ee44bd`) | `mstan/recomp-ui` `1b91c14` + 1 commit (§ui-1) |
 
-| # | Patch | State | Verified |
-|---|-------|-------|----------|
-| 1 | `0001-gpu-depth24-upload-span-must-intersect-scanout-band.patch` | **written, applied locally, uncommitted** | yes — see below |
-| 2 | `0002-bg2d-startcol-accept-unmasked-sra.patch` | **written, applied locally, uncommitted** | yes — see below |
-| 3 | `0003-autocompile-portable-posix-spawner-and-pipeline.patch` | **written, applied locally, uncommitted** | yes — see below |
-| 4 | `0004-video-filters-present-time-upscalers-and-crt.patch` | **written, applied locally, uncommitted** | yes — see below |
-| ui-1 | `recomp-ui-0001-video-filter-row.patch` (recomp-ui submodule) | **written, applied locally, uncommitted** | yes — see below |
+So `git submodule update --init --recursive` reproduces the exact framework
+state this title is developed and tested against; there is nothing to apply.
+(Until 2026-08-17 the same work was parked as `upstream/000N-*.patch` files —
+they were diffed against successive working-tree states, did not apply cleanly
+onto the bare pin, and a `git submodule update` silently discarded the
+uncommitted submodule tree. The fork replaces that.)
 
-Framework base commit these apply to: **`dca482e`**
-(`psxrecomp` submodule gitlink, `v0.3.1-alpha-575-gdca482e`).
+Commits on `psxrecomp/mm8` (oldest first): `ace0c3a` gpu depth24 span (§1),
+`c3294e0` bg2d unmasked sra (§2), `b293249` portable autocompile (§3),
+`b4cb44b` video filters + bug reports + headless scripts (§4–6),
+`0d2228d`→`2276657` disc trees (§7). `recomp-ui/mm8`: `4ee44bd` video filter row.
 
-## Opening the PRs
+## Workflow
 
-`upstream/pr/` holds a ready-to-send kit: a written body per patch
-(`000N-body.md`) and `open_prs.sh`, which forks `mstan/psxrecomp` to your
-account, pushes one branch per fix, opens the three PRs cross-repo, and then
-restores this working tree to base-with-all-patches-applied.
-
-```sh
-bash upstream/pr/open_prs.sh --dry-run     # print the plan, change nothing
-bash upstream/pr/open_prs.sh 1 2           # only the two small, fully-verified fixes
-bash upstream/pr/open_prs.sh               # all three
-```
-
-It is **not** run automatically: it posts publicly, under your GitHub account,
-to someone else's repository. Patch 3 in particular is a large refactor of
-`runtime/src/autocompile.c` that could not be built on Windows here — its body
-says so plainly, but you may want CI or a Windows box to confirm the Windows
-arms compile before sending it. Patches 1 and 2 are small and fully verified.
-
-## Applying / restoring
-
-All three are applied in the working tree as of 2026-08-16. To restore them
-after a submodule reset:
+Inside each submodule `origin` = your fork (fetch https, push ssh), `upstream`
+= mstan.
 
 ```sh
-cd /home/carlos/extended/devel/games/mm8Recomp
-for p in upstream/000*.patch; do git -C psxrecomp apply "$PWD/$p"; done
-bash psxrecomp/tools/ci/build_emitters.sh          # patch 2 touches the emitter
-cmake --build build-release --target psx-runtime -j"$(nproc)"
+# hack in psxrecomp/ on branch mm8, commit, push, re-pin:
+git -C psxrecomp commit -am "..." && git -C psxrecomp push origin mm8
+git add psxrecomp && git commit -m "psxrecomp: bump mm8 pin (...)"
+
+# follow upstream:
+git -C psxrecomp fetch upstream
+git -C psxrecomp rebase upstream/master          # resolve, rebuild, test
+git -C psxrecomp push --force-with-lease origin mm8
+git add psxrecomp && git commit -m "psxrecomp: rebase mm8 onto upstream <sha>"
+
+# open PRs to mstan: one branch per commit, cherry-picked off upstream/master
+git -C psxrecomp switch -c fix/depth24-span upstream/master
+git -C psxrecomp cherry-pick ace0c3a && git -C psxrecomp push origin fix/depth24-span
+~/tools/gh pr create -R mstan/psxrecomp --head carlosbravoa:fix/depth24-span --body-file upstream/pr/0001-body.md
 ```
 
-To check whether one is currently applied (exit 0 = applied):
+`upstream/pr/*.md` are ready PR bodies for §1–3; `upstream/pr/open_prs.sh`
+predates the fork branch (it forked + pushed patch files) — use the
+cherry-pick flow above instead. Rebuild the emitters after touching the
+recompiler (§2), and re-run `tools/regen.sh`.
 
-```sh
-git -C psxrecomp apply --check --reverse "$PWD/upstream/0001-"*.patch
-```
+The sibling `../psxrecomp` checkout mentioned in `CLAUDE.md` is NOT the
+submodule; point it at the fork too (`git remote add fork
+git@github.com:carlosbravoa/psxrecomp.git && git fetch fork && git checkout
+mm8`) or it drifts.
 
-To land them properly — one branch and one PR each, they are independent:
-
-```sh
-git -C psxrecomp switch -c fix/depth24-span-scanout-band
-git -C psxrecomp commit -am "gpu: depth24 upload span must intersect the scanout band"
-git add psxrecomp && git commit -m "psxrecomp: bump to depth24 scanout-band fix"
-# then open a PR against mstan/psxrecomp and repin to the merged SHA
-```
-
-Patch 3 is the large one (~900 lines of `autocompile.c`), but most of that is
-one `#ifdef _WIN32` block becoming shared code. Reviewing it is easiest as:
-read the platform-primitive layer at the top, confirm each Windows expansion
-matches what the call site used to do inline, then read the POSIX arms.
+Per-fix write-ups follow (the PR material).
 
 ---
 
@@ -309,7 +296,10 @@ which `compile_overlays.py` prefers.
 **Class feature:** yes — every psxrecomp title gets the launcher row and the
 `[video] filter` key.
 
-Caveat when reviewing: the `main.cpp` hunks in patch 4 were taken from a working
+(§4, §5 and §6 are one commit on `mm8`, `b4cb44b`, because their `main.cpp` /
+`debug_server.c` / `runtime.cmake` edits were made in one working tree; split
+by file when cherry-picking for PRs.) Historical note from the patch era: the
+`main.cpp` hunks in patch 4 were taken from a working
 tree that also carried earlier uncommitted savestate/menu edits from previous
 sessions (they are not part of patches 1–3 either); the video-filter hunks are the
 ones touching `g_video_filter`, `video_filter_*`, `sdl_filter_*`,
@@ -378,3 +368,54 @@ screenshot → filtered present capture → bug_report bundle → exit 0, ~5 s.
 scan_* fields), and `debug_server_shutdown()` `shutdown(SHUT_RDWR)` before
 `close()` so the I/O thread's `accept()` wakes — every windowed quit on a Linux
 debug build used to hang in `SDL_WaitThread`.
+
+---
+
+## 7 — disc trees: run from extracted files (`docs/DISC_TREE.md`)
+
+**Files:** `runtime/include/disc_tree.h`, `runtime/src/disc_tree.cpp` (new
+engine), `runtime/include/iso_reader.h` + `runtime/src/iso_reader.cpp`
+(`ISOReader::Open()` accepts a tree directory; `SetDiscTreeHints`,
+`LastDiscTreeMount`), `runtime/src/disc_identity.cpp` (identify trees like
+CHDs — through the reader; also applies the netplay gate on that branch),
+`runtime/src/disc_path.cpp` (a tree resolves as "from cue"), `runtime/src/main.cpp`
+(`[disc_tree]` selection + `PSX_DISC_TREE`, hints, layout log, guard blessing),
+`recompiler/src/config_loader.{h,cpp}` (`[disc_tree] dir`, `[[disc_tree.lba_table]]`),
+`runtime/runtime.cmake` (source + `psx-disc-tree` tool target; also stamps
+`psx_game_version.txt` once per build tree so `BUILD_TESTING` configures on
+Ninja), `runtime/CMakeLists.txt` (tests), `runtime/tools/disc_tree_cli.cpp`,
+`tools/disc_tree.py`, `runtime/tests/test_disc_tree.cpp`, `docs/DISC_TREE.md`,
+`docs/config_schema.md`.
+**Class feature:** yes — any title can run from an extracted directory.
+
+### What it does
+
+`tools/disc_tree.py extract` unpacks a MODE2/2352 bin/cue into a directory
+(`cdrom/` files — Form 1 cooked, Form 2/XA/STR raw 2336 B/sector —,
+`audio/trackNN.wav`, `meta/` licence area + PVD + odd raw runs, `disc.toml`).
+The runtime mounts that directory as the disc: descriptors, path tables and
+directory records are rebuilt from the manifest, Form 1 sectors get
+subheader + EDC + ECC, raw and audio sectors are served verbatim. Pristine
+tree ⇒ byte-identical disc; edited/added files ⇒ served in place, grown files
+relocated after the original data area with the title's hardcoded LBA table
+rewritten in the served EXE (`[[disc_tree.lba_table]]`), and the rewritten
+bytes blessed into the text-image guard.
+
+### Verification
+
+* `psx-disc-tree verify game-assets/disc "<MM8 dump>.cue"`: **IDENTICAL,
+  177,992 sectors** (all three tracks, licence area, ECC, pregaps) in 0.8 s.
+* `disc_tree_test` (new): EDC vectors + P/Q fingerprint, synthetic tree
+  round-trip walked back through the reader's ISO9660 parser, relocation of a
+  grown file + new dir/file + CD-DA alias + LBA-table patch and RamPatches.
+  `iso_reader_cdda_test`, `disc_path_resolve_test`, `mod_runtime_test`,
+  `mod_packages_test` still pass.
+* Mega Man 8 headless from the tree with the dump directory moved away: cold
+  boot → Capcom logo → intro FMV (STR + XA from raw storage) → title, 0
+  dispatch misses. Modified tree (STAGE00.BIN +4 KB → LBA 142096, table entry
+  9 rewritten): title → GAME START → intro stage running, RAM 0x801D8000 holds
+  the overlay header, 0 misses. Added dir/file + 22 kHz mono WAV replacing
+  track 3: layout/build/ISO listing/path table all correct.
+* Not exercised: Windows build (std::filesystem/ifstream only, nothing
+  platform-specific), CHD sources for extraction (the extractor needs a raw
+  bin/cue; the runtime can still mount a CHD as before).
