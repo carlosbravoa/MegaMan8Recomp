@@ -27,10 +27,10 @@ index b57d5f9..ce26d2a 100644
 +  (integer prescale + linear finish).
 diff --git a/docs/VIDEO_FILTERS.md b/docs/VIDEO_FILTERS.md
 new file mode 100644
-index 0000000..915f67f
+index 0000000..4b099db
 --- /dev/null
 +++ b/docs/VIDEO_FILTERS.md
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,100 @@
 +# Video filters (present-time upscalers and display looks)
 +
 +Opt-in presentation filters applied between the finished PSX frame and the
@@ -45,7 +45,7 @@ index 0000000..915f67f
 +| `scale2x`, `scale3x` | Scale2x / Scale3x | upscaler (EPX) | shader, 2x/3x FBO | CPU |
 +| `2xsai`, `super2xsai`, `supereagle` | 2xSaI / Super 2xSaI / Super Eagle | upscaler | shader, 2x FBO | CPU |
 +| `xbr2x`, `xbr3x`, `xbr4x` | xBR 2x/3x/4x | upscaler (xBR lv2, corner rule C) | shader, N x FBO | CPU |
-+| `scanlines` | Scanlines | final pass | sharp + scanline mask | prescale + darkened rows |
++| `scanlines` | Scanlines | final pass | sharp + parametric scanlines (opacity / size / glow, gamma-correct bloom) | prescale + darkened rows |
 +| `crt` | CRT | final pass | Lottes-style beam/mask/gamma | prescale + darkened rows |
 +
 +Upscalers render an integer-factor image (pass A) that is then fitted to the
@@ -65,6 +65,34 @@ index 0000000..915f67f
 +* Live: debug server `{"cmd":"video_filter","name":"xbr2x"}`.
 +
 +Precedence: game.toml → settings.toml → env → launcher → mod/debug.
++
++### Scanline parameters
++
++`scanlines` has three live parameters (`VideoScanlineParams`, video_filter.h):
++
++| | range | default | meaning |
++|---|---|---|---|
++| opacity | 0..1 | 0.60 | darkness of the gap between lines (1 = black) |
++| size | 0.1..0.8 | 0.35 | gap thickness as a fraction of one native line |
++| glow | 0..1 | 0.50 | brightens the line core and bleeds the line + neighbours into the gap (bloom, in linear light) |
++
++Set them in the **ESC menu** (SCANLINE DARK / SIZE / GLOW rows, ±5 % per
++press, persisted), in `settings.toml` / `game.toml` (`[video]
++scanline_opacity`, `scanline_size`, `scanline_glow`), or live over the debug
++server (`{"cmd":"video_filter","scan_opacity":"0.9","scan_size":"0.5","scan_glow":"0"}`).
++Lost energy is partly compensated, so the default look keeps the source's
++average brightness and glow makes it brighter, not darker. The software-present
++approximation maps them onto its 3-row prescale weights. Output scale matters:
++at 2x a 35 % gap is one row; 3x–4x+ windows show the profile properly.
++
++### Fixed: CRT one-line flicker
++
++The CRT pass computed the source line as `floor(pn) * (rect.h / native_h)`;
++GLSL compilers lower that division to a reciprocal multiply (0.99999994), so on
++the display buffer at VRAM y=0 the line index floored one too low while at
++y=240 the float add rounded back — a one-line vertical jump every frame under a
++fixed scanline grid. `fetch_px` now uses the exact integer texels-per-line and
++`floor(x + 0.5)`; verified with consecutive `present_capture`s (shift 0).
 +
 +## Where it lives
 +
@@ -104,43 +132,61 @@ index 0000000..915f67f
 +shader; sharp-bilinear is the public-domain prescale+linear formula.
 +hqx (LGPL) and xBRZ (GPL) are deliberately not included.
 diff --git a/recompiler/src/config_loader.cpp b/recompiler/src/config_loader.cpp
-index cd38b9b..7e2e22a 100644
+index cd38b9b..d733622 100644
 --- a/recompiler/src/config_loader.cpp
 +++ b/recompiler/src/config_loader.cpp
-@@ -581,6 +581,9 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
+@@ -581,6 +581,15 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
                  "[video] crt_filter must be \"raw\"|\"crt\"|\"composite\"|\"trinitron\": {}",
                  mode));
          }
 +        if (video.contains("filter")) {
 +            rt.video_filter = toml::find<std::string>(video, "filter");
 +        }
++        if (video.contains("scanline_opacity"))
++            rt.video_scanline_opacity = toml::find<double>(video, "scanline_opacity");
++        if (video.contains("scanline_size"))
++            rt.video_scanline_size = toml::find<double>(video, "scanline_size");
++        if (video.contains("scanline_glow"))
++            rt.video_scanline_glow = toml::find<double>(video, "scanline_glow");
          if (video.contains("auto_skip_fmv")) {
              rt.video_auto_skip_fmv = toml::find<bool>(video, "auto_skip_fmv");
          }
-@@ -2165,6 +2168,9 @@ UserSettings load_user_settings(const fs::path& path) {
+@@ -2165,6 +2174,18 @@ UserSettings load_user_settings(const fs::path& path) {
              else if (m == "composite") { s.screen_kind = 2; s.has_screen_kind = true; }
              else if (m == "trinitron") { s.screen_kind = 3; s.has_screen_kind = true; }
          });
 +        if (v.contains("filter")) try_get([&]{
 +            s.video_filter = toml::find<std::string>(v, "filter"); s.has_video_filter = true;
 +        });
++        if (v.contains("scanline_opacity")) try_get([&]{
++            s.scanline_opacity = toml::find<double>(v, "scanline_opacity"); s.has_scanline_opacity = true;
++        });
++        if (v.contains("scanline_size")) try_get([&]{
++            s.scanline_size = toml::find<double>(v, "scanline_size"); s.has_scanline_size = true;
++        });
++        if (v.contains("scanline_glow")) try_get([&]{
++            s.scanline_glow = toml::find<double>(v, "scanline_glow"); s.has_scanline_glow = true;
++        });
          if (v.contains("auto_skip_fmv")) try_get([&]{
              s.auto_skip_fmv = toml::find<bool>(v, "auto_skip_fmv"); s.has_auto_skip_fmv = true;
          });
-@@ -2469,6 +2475,8 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
+@@ -2469,6 +2490,11 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
                        : s.screen_kind == 3 ? "trinitron" : "raw";
          f << "crt_filter        = \"" << k << "\"\n";
      }
 +    if (s.has_video_filter)
 +        f << "filter            = \"" << s.video_filter << "\"\n";
++    if (s.has_scanline_opacity) f << "scanline_opacity  = " << s.scanline_opacity << "\n";
++    if (s.has_scanline_size)    f << "scanline_size     = " << s.scanline_size << "\n";
++    if (s.has_scanline_glow)    f << "scanline_glow     = " << s.scanline_glow << "\n";
      if (s.has_auto_skip_fmv)
          f << "auto_skip_fmv     = " << (s.auto_skip_fmv ? "true" : "false") << "\n";
      /* turbo_loads is deliberately NOT written back: it is deprecated and no
 diff --git a/recompiler/src/config_loader.h b/recompiler/src/config_loader.h
-index 1829e02..8ff9cad 100644
+index 1829e02..7b1904a 100644
 --- a/recompiler/src/config_loader.h
 +++ b/recompiler/src/config_loader.h
-@@ -414,6 +414,14 @@ struct RuntimeConfig {
+@@ -414,6 +414,20 @@ struct RuntimeConfig {
      // PSX_SCREEN env var overrides this at runtime (debug path).
      int                   video_screen_kind = 0;
  
@@ -151,15 +197,24 @@ index 1829e02..8ff9cad 100644
 +    // the runtime owns the vocabulary (video_filter_from_name) and rejects
 +    // unknown tokens at startup. PSX_VIDEO_FILTER env overrides at runtime.
 +    std::string           video_filter;
++    // scanline_opacity / scanline_size / scanline_glow: parameters of the
++    // "scanlines" video filter (video_filter.h VideoScanlineParams). <0 = unset
++    // (runtime defaults 0.60 / 0.35 / 0.50).
++    double                video_scanline_opacity = -1.0;
++    double                video_scanline_size = -1.0;
++    double                video_scanline_glow = -1.0;
 +
      // auto_skip_fmv: when true, full-motion videos (streaming XA audio + MDEC
      // video) are skipped the instant they're detected — presentation + pacing are
      // suppressed and audio muted for the duration, so an FMV ends in a fraction of
-@@ -1063,6 +1071,7 @@ struct UserSettings {
+@@ -1063,6 +1077,10 @@ struct UserSettings {
      bool has_geometry_correction   = false; bool geometry_correction   = false;
      bool has_perspective_texturing = false; bool perspective_texturing = false;
      bool has_screen_kind    = false; int  screen_kind    = 0; // 0..3 (ScreenKind)
 +    bool has_video_filter   = false; std::string video_filter; // video_filter.h token
++    bool has_scanline_opacity = false; double scanline_opacity = 0.60;
++    bool has_scanline_size    = false; double scanline_size    = 0.35;
++    bool has_scanline_glow    = false; double scanline_glow    = 0.50;
      bool has_auto_skip_fmv  = false; bool auto_skip_fmv  = false; // skip FMVs
      // [video] turbo_loads: DEPRECATED AND IGNORED — the legacy home of the
      // generic Turbo loads switch, back when the launcher drew a row for it.
@@ -237,10 +292,10 @@ index 4593498..fe089ce 100644
          tests/test_gpu_vk_upload_alignment.c)
      target_include_directories(gpu_vk_upload_alignment_test PRIVATE src)
 diff --git a/runtime/include/gpu_gl_renderer.h b/runtime/include/gpu_gl_renderer.h
-index 30b2ab9..d3881f8 100644
+index 30b2ab9..9634f1e 100644
 --- a/runtime/include/gpu_gl_renderer.h
 +++ b/runtime/include/gpu_gl_renderer.h
-@@ -49,6 +49,22 @@ void gl_renderer_present(const uint32_t *pixels, int src_w, int src_h, int linea
+@@ -49,6 +49,24 @@ void gl_renderer_present(const uint32_t *pixels, int src_w, int src_h, int linea
  /* Clear to black + swap (display-disabled frame). */
  void gl_renderer_present_blank(void);
  
@@ -249,6 +304,8 @@ index 30b2ab9..d3881f8 100644
 + * session (those fall back to the plain present), and pass/fallback counters. */
 +void gl_renderer_video_filter_diag(int *last_kind, unsigned *broken_mask,
 +                                   uint64_t *passes, uint64_t *fallbacks);
++/* Source rect (texels), native size, and letterbox of the last filtered draw. */
++void gl_renderer_video_filter_last_rect(int out[10]);
 +
 +/* One-shot capture of the next presented drawable (post-filter, pre-OSD) to a
 + * PNG at `path`. Returns 1 if queued. Poll gl_renderer_present_capture_result():
@@ -285,10 +342,10 @@ index 610f245..41c8ef1 100644
   * removes frontend pacing; 60 and higher request that many native guest
 diff --git a/runtime/include/video_filter.h b/runtime/include/video_filter.h
 new file mode 100644
-index 0000000..bab32c6
+index 0000000..9208100
 --- /dev/null
 +++ b/runtime/include/video_filter.h
-@@ -0,0 +1,122 @@
+@@ -0,0 +1,139 @@
 +/* video_filter.h — present-time pixel-art upscalers and display filters.
 + *
 + * PRESENT-TIME ONLY. A video filter sits between the finished PSX frame (the
@@ -379,6 +436,23 @@ index 0000000..bab32c6
 +void video_filter_set(int kind);
 +int  video_filter_get(void);
 +
++/* Scanline look parameters (VF_SCANLINES; the CRT look ignores them):
++ *   opacity : darkness of the gap between lines, 0 = invisible, 1 = black
++ *   size    : gap thickness as a fraction of one native line (0.1 .. 0.8)
++ *   glow    : brightens the line core and bleeds neighbouring lines into the
++ *             gap (bloom), 0 = flat scanlines, 1 = strong glow
++ * Defaults are a medium, slightly glowing look. Values are clamped. */
++typedef struct {
++    float opacity;   /* default 0.60 */
++    float size;      /* default 0.35 */
++    float glow;      /* default 0.50 */
++} VideoScanlineParams;
++void video_filter_scanline_set(const VideoScanlineParams* p);
++void video_filter_scanline_get(VideoScanlineParams* out);
++#define VF_SCAN_OPACITY_DEFAULT 0.60f
++#define VF_SCAN_SIZE_DEFAULT    0.35f
++#define VF_SCAN_GLOW_DEFAULT    0.50f
++
 +/* Factor the CPU path produces for `kind`: video_filter_scale() for the
 + * upscalers, VF_SW_PRESCALE (nearest prescale + optional scanline mask) for the
 + * final-pass filters, 1 for VF_NONE. */
@@ -426,7 +500,7 @@ index 8a49dda..ba93021 100644
      ${PSXRECOMP_ROOT}/runtime/src/iso_reader_c.cpp
      ${PSXRECOMP_ROOT}/runtime/src/psx_cycles.c
 diff --git a/runtime/src/debug_server.c b/runtime/src/debug_server.c
-index 61cd246..ac1b473 100644
+index 61cd246..bfb8d33 100644
 --- a/runtime/src/debug_server.c
 +++ b/runtime/src/debug_server.c
 @@ -43,6 +43,7 @@
@@ -553,7 +627,7 @@ index 61cd246..ac1b473 100644
          return;
      }
      if (psx_netplay_active()) {
-@@ -8757,6 +8836,96 @@ static void handle_wide_shot(int id, const char *json)
+@@ -8757,6 +8836,112 @@ static void handle_wide_shot(int id, const char *json)
   * this command unconditionally through handle_screenshot_file silently omits
   * precisely the reveal margins that widescreen diagnostics need to inspect.
   * Keep screenshot_file as the explicit canonical-VRAM probe. */
@@ -586,6 +660,16 @@ index 61cd246..ac1b473 100644
 +        video_filter_set(kind);
 +        gl_renderer_invalidate_present();
 +    }
++    {
++        /* Optional scanline parameters: scan_opacity / scan_size / scan_glow. */
++        char v[32];
++        VideoScanlineParams sp; video_filter_scanline_get(&sp);
++        int any = 0;
++        if (json_get_str(json, "scan_opacity", v, sizeof v)) { sp.opacity = (float)atof(v); any = 1; }
++        if (json_get_str(json, "scan_size", v, sizeof v))    { sp.size = (float)atof(v); any = 1; }
++        if (json_get_str(json, "scan_glow", v, sizeof v))    { sp.glow = (float)atof(v); any = 1; }
++        if (any) { video_filter_scanline_set(&sp); gl_renderer_invalidate_present(); }
++    }
 +    int last_kind = 0; unsigned broken = 0; uint64_t passes = 0, fallbacks = 0;
 +    gl_renderer_video_filter_diag(&last_kind, &broken, &passes, &fallbacks);
 +    char vocab[512]; int n = 0;
@@ -594,12 +678,18 @@ index 61cd246..ac1b473 100644
 +        n += snprintf(vocab + n, sizeof(vocab) - (size_t)n, "%s\"%s\"", k ? "," : "",
 +                      video_filter_name(k));
 +    const int cur = video_filter_get();
++    VideoScanlineParams spr; video_filter_scanline_get(&spr);
++    int lr[10] = {0};
++    gl_renderer_video_filter_last_rect(lr);
 +    send_fmt("{\"id\":%d,\"ok\":true,\"filter\":\"%s\",\"kind\":%d,\"scale\":%d,"
-+             "\"cpu_scale\":%d,\"names\":[%s],"
-+             "\"gl\":{\"last_kind\":%d,\"broken_mask\":%u,\"passes\":%llu,\"fallbacks\":%llu}}",
++             "\"cpu_scale\":%d,\"names\":[%s],\"scanline\":{\"opacity\":%.2f,\"size\":%.2f,\"glow\":%.2f},"
++             "\"gl\":{\"last_kind\":%d,\"broken_mask\":%u,\"passes\":%llu,\"fallbacks\":%llu,"
++             "\"last_rect\":[%d,%d,%d,%d],\"last_native\":[%d,%d],\"last_letterbox\":[%d,%d,%d,%d]}}",
 +             id, video_filter_name(cur), cur, video_filter_scale(cur),
-+             video_filter_cpu_scale(cur), vocab, last_kind, broken,
-+             (unsigned long long)passes, (unsigned long long)fallbacks);
++             video_filter_cpu_scale(cur), vocab, (double)spr.opacity, (double)spr.size, (double)spr.glow,
++             last_kind, broken,
++             (unsigned long long)passes, (unsigned long long)fallbacks,
++             lr[0], lr[1], lr[2], lr[3], lr[4], lr[5], lr[6], lr[7], lr[8], lr[9]);
 +}
 +
 +/* window_size: {"cmd":"window_size","w":640,"h":480} resizes the game window
@@ -650,7 +740,7 @@ index 61cd246..ac1b473 100644
  static void handle_present_screenshot(int id, const char *json)
  {
      extern int gr_wide_supported(void);
-@@ -13336,6 +13505,8 @@ static const CmdEntry s_commands[] = {
+@@ -13336,6 +13521,8 @@ static const CmdEntry s_commands[] = {
      { "input_route_stop",  handle_input_route_stop },
      { "input_route_status",handle_input_route_status },
      { "savestate",         handle_savestate },
@@ -659,7 +749,7 @@ index 61cd246..ac1b473 100644
      { "turbo",             handle_turbo },
      { "turbo_state",       handle_turbo_state },
      { "pause",             handle_pause },
-@@ -13354,6 +13525,10 @@ static const CmdEntry s_commands[] = {
+@@ -13354,6 +13541,10 @@ static const CmdEntry s_commands[] = {
      { "set_snapshot",      handle_set_snapshot },
      { "get_snapshots",     handle_get_snapshots },
      { "screenshot",        handle_present_screenshot },
@@ -670,7 +760,7 @@ index 61cd246..ac1b473 100644
      { "screenshot_file",   handle_screenshot_file },
      { "screenshot_hires",  handle_screenshot_hires },
      { "display_ring_get",  handle_display_ring_get },
-@@ -14024,6 +14199,35 @@ void debug_server_poll(void)
+@@ -14024,6 +14215,35 @@ void debug_server_poll(void)
      SDL_UnlockMutex(s_io_mutex);
  }
  
@@ -706,12 +796,29 @@ index 61cd246..ac1b473 100644
  void debug_server_record_frame(void)
  {
      if (s_fmv_quiet) {
+@@ -14147,6 +14367,16 @@ void debug_server_shutdown(void)
+      * blocking accept(), then join. */
+     s_io_running = 0;
+     if (s_listen != SOCK_INVALID) {
++        /* On Linux/BSD, close() does NOT wake a thread blocked in accept() on
++         * that socket (the descriptor is released, the wait continues), so
++         * the join below used to hang every windowed quit on a debug build.
++         * shutdown(SHUT_RDWR) fails the pending accept first; Windows wakes it
++         * on closesocket() and returns ENOTSOCK-style from shutdown, harmless. */
++#ifdef _WIN32
++        shutdown(s_listen, SD_BOTH);
++#else
++        shutdown(s_listen, SHUT_RDWR);
++#endif
+         sock_close(s_listen);
+         s_listen = SOCK_INVALID;
+     }
 diff --git a/runtime/src/gpu_gl_filter_shaders.h b/runtime/src/gpu_gl_filter_shaders.h
 new file mode 100644
-index 0000000..429ae41
+index 0000000..a75dfc8
 --- /dev/null
 +++ b/runtime/src/gpu_gl_filter_shaders.h
-@@ -0,0 +1,396 @@
+@@ -0,0 +1,422 @@
 +/* gpu_gl_filter_shaders.h — GLSL sources for the present-time video filters
 + * (OpenGL backend). Included only by gpu_gl_renderer.c.
 + *
@@ -1047,16 +1154,22 @@ index 0000000..429ae41
 +    "uniform vec2  u_out;\n"
 +    "uniform vec2  u_native;\n"
 +    "uniform int   u_mode;\n"
++    "uniform vec3  u_scan;      /* scanline opacity, gap size, glow (video_filter.h) */\n"
 +    "out vec4 frag;\n"
 +    "vec3 sample_lin(vec2 pos){\n"
 +    "  pos = clamp(pos, u_rect.xy + 0.5, u_rect.xy + u_rect.zw - 0.5);\n"
 +    "  return texture(u_tex, pos / u_texsize).rgb; }\n"
 +    "vec3 fetch_px(vec2 pn){   /* pn: native pixel coords (rect-local) */\n"
-+    "  vec2 t = floor(pn) * (u_rect.zw / u_native) + u_rect.xy;\n"
-+    "  ivec2 ti = clamp(ivec2(floor(t)), ivec2(u_rect.xy), ivec2(u_rect.xy + u_rect.zw) - 1);\n"
++    "  /* Source texels per native pixel is an integer (1..4). Never form it as\n"
++    "   * zw/native: the compiler may lower that to zw*(1/native) = 0.99999994,\n"
++    "   * which floors one line low on the display buffer at y=0 and not on the\n"
++    "   * one at y=240 -> a one-line flicker between double buffers. */\n"
++    "  vec2 sc = floor(u_rect.zw / u_native + 0.5);\n"
++    "  vec2 t = floor(pn) * sc + u_rect.xy;\n"
++    "  ivec2 ti = clamp(ivec2(floor(t + 0.5)), ivec2(u_rect.xy + 0.5), ivec2(u_rect.xy + u_rect.zw + 0.5) - 1);\n"
 +    "  return texelFetch(u_tex, ti, 0).rgb; }\n"
 +    "vec2 sharp_pos(vec2 p){\n"
-+    "  vec2 scale = max(floor(u_out / u_rect.zw), vec2(1.0));\n"
++    "  vec2 scale = max(floor(u_out / u_rect.zw + 1e-4), vec2(1.0));\n"
 +    "  vec2 tf = floor(p); vec2 s = fract(p);\n"
 +    "  vec2 region_range = 0.5 - 0.5 / scale;\n"
 +    "  vec2 cd = s - 0.5;\n"
@@ -1094,22 +1207,42 @@ index 0000000..429ae41
 +    "  vec2 p = v_uv * u_rect.zw;              /* continuous texel coords inside the rect */\n"
 +    "  if (u_mode == 2) {\n"
 +    "    vec2 pn = v_uv * u_native;             /* native pixel coords */\n"
++
 +    "    vec3 c = Tri(pn) * Mask(gl_FragCoord.xy);\n"
 +    "    frag = vec4(ToSrgb(clamp(c, 0.0, 1.0)), 1.0);\n"
 +    "    return;\n"
 +    "  }\n"
 +    "  vec3 c = sample_lin(u_rect.xy + sharp_pos(p));\n"
 +    "  if (u_mode == 1) {\n"
-+    "    float ly = fract(v_uv.y * u_native.y);\n"
-+    "    float d = abs(ly - 0.5);\n"
-+    "    c *= 1.0 - 0.45 * smoothstep(0.25, 0.5, d);\n"
++    "    /* Scanlines: per native line, a bright core and a gap of `size`\n"
++    "     * (u_scan.y) darkened by `opacity` (u_scan.x). `glow` (u_scan.z)\n"
++    "     * brightens the core and bleeds the line + its neighbours into the\n"
++    "     * gap (a cheap bloom), all in linear light. Energy lost to the gap is\n"
++    "     * partly compensated so the picture does not just get darker. */\n"
++    "    float opacity = u_scan.x, size = u_scan.y, glow = u_scan.z;\n"
++    "    float d = abs(fract(v_uv.y * u_native.y) - 0.5) * 2.0;   /* 0 core .. 1 edge */\n"
++    "    float e0 = 1.0 - size;\n"
++    "    float soft = 0.18;\n"
++    "    float gap = smoothstep(e0 - soft, e0 + soft, d);\n"
++    "    float linePx = u_rect.w / u_native.y;                       /* texels per native line */\n"
++    "    vec2  pos = u_rect.xy + sharp_pos(p);\n"
++    "    vec3 L  = ToLinear(sample_lin(pos));\n"
++    "    vec3 Lu = ToLinear(sample_lin(pos - vec2(0.0, linePx)));\n"
++    "    vec3 Ld = ToLinear(sample_lin(pos + vec2(0.0, linePx)));\n"
++    "    float w = 1.0 - opacity * gap;\n"
++    "    vec3 res = L * w;\n"
++    "    res += L * (glow * 0.45) * (1.0 - gap);                     /* brighter core */\n"
++    "    res += (L + Lu + Ld) * (glow * 0.22) * gap * opacity;      /* bloom into the gap */\n"
++    "    res *= 1.0 + 0.35 * opacity * size;                        /* energy compensation */\n"
++    "    frag = vec4(ToSrgb(clamp(res, 0.0, 1.0)), 1.0);\n"
++    "    return;\n"
 +    "  }\n"
 +    "  frag = vec4(c, 1.0);\n"
 +    "}\n";
 +
 +#endif /* PSXRECOMP_GPU_GL_FILTER_SHADERS_H */
 diff --git a/runtime/src/gpu_gl_renderer.c b/runtime/src/gpu_gl_renderer.c
-index c7b7732..30dc9fb 100644
+index c7b7732..6531ce3 100644
 --- a/runtime/src/gpu_gl_renderer.c
 +++ b/runtime/src/gpu_gl_renderer.c
 @@ -72,6 +72,8 @@
@@ -1121,31 +1254,34 @@ index c7b7732..30dc9fb 100644
  
  #include "psx_sdl.h"
  #if defined(PSX_SDL3)
-@@ -147,6 +149,7 @@ typedef void   (APIENTRY *PFN_glUniform1f)(GLint, GLfloat);
+@@ -147,6 +149,8 @@ typedef void   (APIENTRY *PFN_glUniform1f)(GLint, GLfloat);
  typedef void   (APIENTRY *PFN_glUniform2i)(GLint, GLint, GLint);
  typedef void   (APIENTRY *PFN_glUniform4i)(GLint, GLint, GLint, GLint, GLint);
  typedef void   (APIENTRY *PFN_glUniform4f)(GLint, GLfloat, GLfloat, GLfloat, GLfloat);
 +typedef void   (APIENTRY *PFN_glUniform2f)(GLint, GLfloat, GLfloat);
++typedef void   (APIENTRY *PFN_glUniform3f)(GLint, GLfloat, GLfloat, GLfloat);
  typedef void   (APIENTRY *PFN_glBlendColor)(GLfloat, GLfloat, GLfloat, GLfloat);
  typedef void   (APIENTRY *PFN_glBlendFuncSeparate)(GLenum, GLenum, GLenum, GLenum);
  typedef void   (APIENTRY *PFN_glBlendEquationSeparate)(GLenum, GLenum);
-@@ -212,6 +215,7 @@ static PFN_glUniform1f         p_glUniform1f;
+@@ -212,6 +216,8 @@ static PFN_glUniform1f         p_glUniform1f;
  static PFN_glUniform2i         p_glUniform2i;
  static PFN_glUniform4i         p_glUniform4i;
  static PFN_glUniform4f         p_glUniform4f;
 +static PFN_glUniform2f         p_glUniform2f;
++static PFN_glUniform3f         p_glUniform3f;
  static PFN_glBlendColor        p_glBlendColor;
  static PFN_glBlendFuncSeparate p_glBlendFuncSeparate;
  static PFN_glBlendEquationSeparate p_glBlendEquationSeparate;
-@@ -269,6 +273,7 @@ static int load_modern_gl(void) {
+@@ -269,6 +275,8 @@ static int load_modern_gl(void) {
      LOAD(p_glUniform1f, "glUniform1f");
      LOAD(p_glUniform2i, "glUniform2i"); LOAD(p_glUniform4i, "glUniform4i");
      LOAD(p_glUniform4f, "glUniform4f");
 +    LOAD(p_glUniform2f, "glUniform2f");
++    LOAD(p_glUniform3f, "glUniform3f");
      LOAD(p_glBlendColor, "glBlendColor");
      LOAD(p_glBlendFuncSeparate, "glBlendFuncSeparate");
      LOAD(p_glBlendEquationSeparate, "glBlendEquationSeparate");
-@@ -765,7 +770,19 @@ static void letterbox_rect_aspect(int ww, int wh, int num, int den,
+@@ -765,7 +773,19 @@ static void letterbox_rect_aspect(int ww, int wh, int num, int den,
  static void letterbox_rect(int ww, int wh, int *x, int *y, int *w, int *h);
  static void present_target_quad(GLuint tex, int tex_w, int tex_h,
                                  int x, int y, int w, int h, int linear,
@@ -1166,7 +1302,7 @@ index c7b7732..30dc9fb 100644
  
  static void coh_record(int kind, int x0, int y0, int x1, int y1) {
      GlCohEvent *e = &s_coh_ring[s_coh_seq % GL_COH_RING_CAP];
-@@ -2823,6 +2840,7 @@ void gl_renderer_shutdown(void) {
+@@ -2823,6 +2843,7 @@ void gl_renderer_shutdown(void) {
      s_osd_tex = 0;
      s_osd_tw = 0;
      s_osd_th = 0;
@@ -1174,7 +1310,7 @@ index c7b7732..30dc9fb 100644
      s_depth24_skip_up = 0;
      rect_clear(&s_d24_skip_fb);
      hold_invalidate();
-@@ -2877,6 +2895,23 @@ void gl_renderer_present(const uint32_t *pixels, int src_w, int src_h, int linea
+@@ -2877,6 +2898,23 @@ void gl_renderer_present(const uint32_t *pixels, int src_w, int src_h, int linea
      glViewport(lx, ly, lw, lh);
      p_glActiveTexture(PSXGL_TEXTURE0);
      upload_present_tex(pixels, src_w, src_h, linear);
@@ -1198,7 +1334,7 @@ index c7b7732..30dc9fb 100644
      p_glUseProgram(s_present_prog); p_glUniform1i(s_present_uTex, 0);
      if (crop) {
          /* Cropped present keeps left-aligned content; still inset so linear
-@@ -3749,8 +3784,32 @@ static void interp_draw_quad(float alpha, int lx, int ly, int lw, int lh) {
+@@ -3749,8 +3787,32 @@ static void interp_draw_quad(float alpha, int lx, int ly, int lw, int lh) {
          p_glWaitSync(s_interp_fence[prev], 0, PSXGL_TIMEOUT_IGNORED);
      if (s_interp_fence[curr])
          p_glWaitSync(s_interp_fence[curr], 0, PSXGL_TIMEOUT_IGNORED);
@@ -1233,7 +1369,7 @@ index c7b7732..30dc9fb 100644
      p_glActiveTexture(PSXGL_TEXTURE0);
      glBindTexture(GL_TEXTURE_2D, s_interp_tex[prev]);
      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, s_interp_linear ? GL_LINEAR : GL_NEAREST);
-@@ -3764,12 +3823,34 @@ static void interp_draw_quad(float alpha, int lx, int ly, int lw, int lh) {
+@@ -3764,12 +3826,34 @@ static void interp_draw_quad(float alpha, int lx, int ly, int lw, int lh) {
      p_glUniform1i(s_interp_uCurr, 1);
      p_glUniform1f(s_interp_uAlpha, alpha);
      p_glUniform1i(s_interp_uBlendMode, s_interp_blend_mode);
@@ -1269,7 +1405,7 @@ index c7b7732..30dc9fb 100644
  }
  
  static int interp_present(void) {
-@@ -3923,6 +4004,7 @@ static void gl_draw_osd_image(const uint32_t *px, int ow, int oh,
+@@ -3923,6 +4007,7 @@ static void gl_draw_osd_image(const uint32_t *px, int ow, int oh,
  
  /* Composite host toast + volume bar into the default framebuffer, then swap. */
  static void gl_swap_with_osd(void) {
@@ -1277,7 +1413,7 @@ index c7b7732..30dc9fb 100644
      if (s_present_prog && s_ctx) {
          int ww = 0, wh = 0;
          SDL_GL_GetDrawableSize(s_win, &ww, &wh);
-@@ -3961,10 +4043,361 @@ static void gl_swap_with_osd(void) {
+@@ -3961,10 +4046,375 @@ static void gl_swap_with_osd(void) {
      SDL_GL_SwapWindow(s_win);
  }
  
@@ -1299,7 +1435,7 @@ index c7b7732..30dc9fb 100644
 +static GLint  s_vf_up_uTex[VF_COUNT], s_vf_up_uRect[VF_COUNT], s_vf_up_uScale[VF_COUNT];
 +static GLuint s_vf_final_prog = 0;
 +static GLint  s_vf_f_uTex = -1, s_vf_f_uRect = -1, s_vf_f_uTexSize = -1, s_vf_f_uOut = -1,
-+              s_vf_f_uNative = -1, s_vf_f_uMode = -1, s_vf_f_uUvRect = -1;
++              s_vf_f_uNative = -1, s_vf_f_uMode = -1, s_vf_f_uUvRect = -1, s_vf_f_uScan = -1;
 +static uint32_t s_vf_broken = 0;                   /* bit per kind: shader failed */
 +/* Pass-A output, one per GL context (main / interp thread) — container objects
 + * (FBOs) are per-context anyway and a texture resized from two contexts at
@@ -1311,6 +1447,7 @@ index c7b7732..30dc9fb 100644
 +static GLuint        s_vf_fbo[2];
 +static uint64_t s_vf_passes = 0, s_vf_fallbacks = 0;
 +static int      s_vf_last_kind = 0;
++static int      s_vf_last_rect[10];                /* rx,ry,rw,rh,native_w,native_h,lx,ly,lw,lh */
 +/* One-shot capture of the presented drawable (debug server "present_capture"). */
 +static char s_vf_capture_path[512];
 +static int  s_vf_capture_pending = 0;
@@ -1353,6 +1490,7 @@ index c7b7732..30dc9fb 100644
 +        s_vf_f_uNative  = p_glGetUniformLocation(s_vf_final_prog, "u_native");
 +        s_vf_f_uMode    = p_glGetUniformLocation(s_vf_final_prog, "u_mode");
 +        s_vf_f_uUvRect  = p_glGetUniformLocation(s_vf_final_prog, "u_uv_rect");
++        s_vf_f_uScan    = p_glGetUniformLocation(s_vf_final_prog, "u_scan");
 +    }
 +    if (video_filter_is_upscaler(kind) && !s_vf_up_prog[kind]) {
 +        /* xBR 2x/3x/4x share one program (u_scale). */
@@ -1516,6 +1654,11 @@ index c7b7732..30dc9fb 100644
 +    p_glUniform2f(s_vf_f_uOut, (float)lw, (float)lh);
 +    p_glUniform2f(s_vf_f_uNative, (float)native_w, (float)native_h);
 +    p_glUniform1i(s_vf_f_uMode, mode);
++    {
++        VideoScanlineParams sp;
++        video_filter_scanline_get(&sp);
++        p_glUniform3f(s_vf_f_uScan, sp.opacity, sp.size, sp.glow);
++    }
 +    /* Row 0 = top: PRESENT_VS maps the top of the quad to v = u_uv_rect.y. */
 +    p_glUniform4f(s_vf_f_uUvRect, 0.f, 0.f, 1.f, 1.f);
 +    p_glBindVertexArray(vf_current_vao());
@@ -1529,7 +1672,14 @@ index c7b7732..30dc9fb 100644
 +    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 +    s_vf_passes++;
 +    s_vf_last_kind = kind;
++    s_vf_last_rect[0] = rx; s_vf_last_rect[1] = ry; s_vf_last_rect[2] = rw; s_vf_last_rect[3] = rh;
++    s_vf_last_rect[4] = native_w; s_vf_last_rect[5] = native_h;
++    s_vf_last_rect[6] = lx; s_vf_last_rect[7] = ly; s_vf_last_rect[8] = lw; s_vf_last_rect[9] = lh;
 +    return 1;
++}
++
++void gl_renderer_video_filter_last_rect(int out[10]) {
++    for (int i = 0; i < 10; i++) out[i] = s_vf_last_rect[i];
 +}
 +
 +void gl_renderer_video_filter_diag(int *last_kind, unsigned *broken_mask,
@@ -1640,7 +1790,7 @@ index c7b7732..30dc9fb 100644
      p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
      glViewport(lx, ly, lw, lh);
      p_glActiveTexture(PSXGL_TEXTURE0);
-@@ -4035,15 +4468,18 @@ int gl_renderer_present_hold_last(void) {
+@@ -4035,15 +4485,18 @@ int gl_renderer_present_hold_last(void) {
          }
          /* v_flip=0: drawable capture is already screen-oriented. */
          present_target_quad(s_hold_tex, s_hold_tw, s_hold_th,
@@ -1663,7 +1813,7 @@ index c7b7732..30dc9fb 100644
          /* Upgrade to drawable after letterboxing once. Live+interp leaves
           * HOLD_NATIVE (no Swap on main); drawable path is the soak-proven
           * full-window image (GL without interp). */
-@@ -4104,7 +4540,7 @@ void gl_renderer_present_vram(int disp_x, int disp_y, int w, int h, int linear,
+@@ -4104,7 +4557,7 @@ void gl_renderer_present_vram(int disp_x, int disp_y, int w, int h, int linear,
          return;
      }
      present_target_quad(s_hr_tex, VRAM_W, VRAM_H,
@@ -1672,7 +1822,7 @@ index c7b7732..30dc9fb 100644
      pres_record(GL_PRES_VRAM, disp_x, disp_y, w, h, lx, ly, lw, lh);
      hold_capture_drawable();
      latency_ring_mark(LAT_SWAP_BEGIN);
-@@ -4205,7 +4641,8 @@ int gl_renderer_present_wide_fbo(int disp_x, int disp_y, int disp_h, int linear)
+@@ -4205,7 +4658,8 @@ int gl_renderer_present_wide_fbo(int disp_x, int disp_y, int disp_h, int linear)
          return 1;
      }
      present_target_quad(tex, g_wide_w, VRAM_H,
@@ -1683,7 +1833,7 @@ index c7b7732..30dc9fb 100644
      hold_capture_drawable();
      latency_ring_mark(LAT_SWAP_BEGIN);
 diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
-index 9117b59..3f4f497 100644
+index 9117b59..f80be2b 100644
 --- a/runtime/src/main.cpp
 +++ b/runtime/src/main.cpp
 @@ -38,6 +38,10 @@ extern "C" void psx_event_step_conservative_env_init(void);
@@ -1735,15 +1885,16 @@ index 9117b59..3f4f497 100644
      if (!is_load && ok)
          psx_savestate_menu_note_slots_changed();
      if (is_load && ok)
-@@ -1104,6 +1125,7 @@ static int           g_video_renderer = PSXRecompV4::DEFAULT_VIDEO_RENDERER;
+@@ -1104,6 +1125,8 @@ static int           g_video_renderer = PSXRecompV4::DEFAULT_VIDEO_RENDERER;
  static int           g_fullscreen     = 0;  /* tri-state: 0 windowed, 1 borderless (desktop)
                                                * fullscreen, 2 exclusive fullscreen */
  static int           g_video_screen   = 0;  /* 0=raw,1=crt,2=composite,3=trinitron */
 +static int           g_video_filter   = 0;  /* VideoFilterKind (video_filter.h); 0 = none */
++static VideoScanlineParams g_scan = { VF_SCAN_OPACITY_DEFAULT, VF_SCAN_SIZE_DEFAULT, VF_SCAN_GLOW_DEFAULT };
  static int           g_video_win_w    = 1280; /* window width (height follows aspect) */
  static bool          g_audio_spu_hq   = false; /* SPU float-shadow (env overrides) */
  static int           g_audio_freq     = 44100; /* host device request */
-@@ -1246,6 +1268,25 @@ extern "C" int psx_mod_set_adaptive_display_aspect(
+@@ -1246,6 +1269,25 @@ extern "C" int psx_mod_set_adaptive_display_aspect(
      return 1;
  }
  
@@ -1769,7 +1920,7 @@ index 9117b59..3f4f497 100644
  extern "C" int psx_mod_set_native_vblank_rate(
      uint32_t frames_per_second) {
      if (frames_per_second != 0 &&
-@@ -1515,6 +1556,92 @@ static bool          g_vk_active = false;    /* Vulkan context live -> VK presen
+@@ -1515,6 +1557,93 @@ static bool          g_vk_active = false;    /* Vulkan context live -> VK presen
   * keeps CPU VRAM current every frame (so screenshots reflect the screen). */
  static int           g_gl_fbo_present = 1;
  
@@ -1839,7 +1990,7 @@ index 9117b59..3f4f497 100644
 +    return std::snprintf(buf, (size_t)cap,
 +        "\"platform\":\"%s\",\"build\":\"%s\",\"renderer\":\"%s\","
 +        "\"supersampling\":%d,\"antialiasing\":%s,\"texture_filter\":\"%s\","
-+        "\"screen_kind\":%d,\"video_filter\":\"%s\",\"aspect\":\"%d:%d\","
++        "\"screen_kind\":%d,\"video_filter\":\"%s\",\"scanline\":[%.2f,%.2f,%.2f],\"aspect\":\"%d:%d\","
 +        "\"widescreen_engaged\":%s,\"fullscreen_mode\":%d,"
 +        "\"window\":[%d,%d],\"drawable\":[%d,%d],\"vsync\":%d,"
 +        "\"frame_interpolation\":%s,\"low_latency_input\":%s,"
@@ -1852,7 +2003,8 @@ index 9117b59..3f4f497 100644
 +#endif
 +        rend, g_video_scale, g_video_aa ? "true" : "false",
 +        g_video_texfilter ? "bilinear" : "nearest", g_video_screen,
-+        video_filter_name(video_filter_get()), g_video_aspect_num, g_video_aspect_den,
++        video_filter_name(video_filter_get()), (double)g_scan.opacity, (double)g_scan.size, (double)g_scan.glow,
++        g_video_aspect_num, g_video_aspect_den,
 +        g_ws_engaged ? "true" : "false", g_fullscreen, ww, wh, dw, dh, g_video_vsync,
 +        g_frame_interpolation ? "true" : "false", g_low_latency_input ? "true" : "false",
 +        psx_bios_hle_enabled() ? "true" : "false", g_auto_skip_fmv ? "true" : "false",
@@ -1862,7 +2014,7 @@ index 9117b59..3f4f497 100644
  /* Cleared on lobby soft-return so rematch can re-arm CPU-auth GPU lock. */
  static int s_netplay_sw_gpu_locked;
  /* Netplay + user OpenGL: dual-raster (SW@1× authority + GL@Nx present) or
-@@ -2475,6 +2602,8 @@ static void teardown_game_session_keep_lobby(void) {
+@@ -2475,6 +2604,8 @@ static void teardown_game_session_keep_lobby(void) {
          gl_renderer_shutdown();
          g_gl_active = false;
      }
@@ -1871,7 +2023,7 @@ index 9117b59..3f4f497 100644
      if (sdl_texture) { SDL_DestroyTexture(sdl_texture); sdl_texture = nullptr; }
      if (sdl_renderer) { SDL_DestroyRenderer(sdl_renderer); sdl_renderer = nullptr; }
      if (sdl_window) { SDL_DestroyWindow(sdl_window); sdl_window = nullptr; }
-@@ -4962,7 +5091,8 @@ static void netplay_hold_last_present_tick(void) {
+@@ -4962,7 +5093,8 @@ static void netplay_hold_last_present_tick(void) {
      } else if (!g_vk_active && sdl_renderer && sdl_texture && s_sw_hold_valid) {
          SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
          SDL_RenderClear(sdl_renderer);
@@ -1881,7 +2033,7 @@ index 9117b59..3f4f497 100644
          host_osd_draw_sdl(sdl_renderer);
          SDL_RenderPresent(sdl_renderer);
          did = 1;
-@@ -5305,11 +5435,18 @@ static int savestate_menu_slot = 0;
+@@ -5305,11 +5437,18 @@ static int savestate_menu_slot = 0;
  static int savestate_menu_ignore_toggle_release = 0;
  static SDL_Keycode savestate_menu_open_key = 0;
  
@@ -1900,7 +2052,7 @@ index 9117b59..3f4f497 100644
      savestate_menu_open = 0;
      savestate_menu_sync_overlay();
      host_osd_push("Save states closed", 800);
-@@ -5328,6 +5465,263 @@ static void savestate_menu_toggle(SDL_Keycode opened_by_key) {
+@@ -5328,6 +5467,288 @@ static void savestate_menu_toggle(SDL_Keycode opened_by_key) {
      savestate_menu_sync_overlay();
  }
  
@@ -1924,6 +2076,9 @@ index 9117b59..3f4f497 100644
 +    SYSM_FPS,
 +    SYSM_FILTER,
 +    SYSM_VIDEO_FILTER,
++    SYSM_SCAN_OPACITY,
++    SYSM_SCAN_SIZE,
++    SYSM_SCAN_GLOW,
 +    SYSM_RESTART,
 +    SYSM_QUIT,
 +    SYSM_COUNT
@@ -1978,6 +2133,12 @@ index 9117b59..3f4f497 100644
 +            up[i] = (char)((lab[i] >= 'a' && lab[i] <= 'z') ? lab[i] - 32 : lab[i]);
 +        up[i] = 0;
 +        snprintf(rows[SYSM_VIDEO_FILTER], sizeof rows[0], "VIDEO FILTER %s", up);
++    }
++    {
++        VideoScanlineParams sp; video_filter_scanline_get(&sp);
++        snprintf(rows[SYSM_SCAN_OPACITY], sizeof rows[0], "SCANLINE DARK %d%%", (int)(sp.opacity * 100.f + 0.5f));
++        snprintf(rows[SYSM_SCAN_SIZE],    sizeof rows[0], "SCANLINE SIZE %d%%", (int)(sp.size * 100.f + 0.5f));
++        snprintf(rows[SYSM_SCAN_GLOW],    sizeof rows[0], "SCANLINE GLOW %d%%", (int)(sp.glow * 100.f + 0.5f));
 +    }
 +    snprintf(rows[SYSM_RESTART],    sizeof rows[0], "RESTART GAME");
 +    snprintf(rows[SYSM_QUIT],       sizeof rows[0], "QUIT");
@@ -2044,6 +2205,7 @@ index 9117b59..3f4f497 100644
 +
 +/* delta: -1 left, +1 right, 0 = Enter. Rows that are actions ignore left/right. */
 +static void persist_video_filter_setting(int kind);   /* defined with the settings path */
++static void persist_scanline_settings(void);
 +static void sysmenu_activate(int delta) {
 +    switch (g_sysmenu_sel) {
 +    case SYSM_RESUME:
@@ -2101,6 +2263,21 @@ index 9117b59..3f4f497 100644
 +        gr_set_texture_filter(g_video_texfilter);
 +        sysmenu_sync();
 +        break;
++    case SYSM_SCAN_OPACITY:
++    case SYSM_SCAN_SIZE:
++    case SYSM_SCAN_GLOW: {
++        VideoScanlineParams sp; video_filter_scanline_get(&sp);
++        const float step = (delta < 0 ? -0.05f : 0.05f);
++        float* v = g_sysmenu_sel == SYSM_SCAN_OPACITY ? &sp.opacity
++                 : g_sysmenu_sel == SYSM_SCAN_SIZE ? &sp.size : &sp.glow;
++        *v += step;
++        video_filter_scanline_set(&sp);
++        video_filter_scanline_get(&g_scan);
++        gl_renderer_invalidate_present();
++        persist_scanline_settings();
++        sysmenu_sync();
++        break;
++    }
 +    case SYSM_VIDEO_FILTER: {
 +        int k = video_filter_get() + (delta < 0 ? -1 : 1);
 +        if (k < 0) k = VF_COUNT - 1;
@@ -2164,7 +2341,7 @@ index 9117b59..3f4f497 100644
  static void savestate_menu_move(int delta) {
      savestate_menu_slot += delta;
      while (savestate_menu_slot < 0)
-@@ -5363,11 +5757,32 @@ static int savestate_submit_slot(int slot, int save) {
+@@ -5363,11 +5784,32 @@ static int savestate_submit_slot(int slot, int save) {
      return 1;
  }
  
@@ -2198,7 +2375,7 @@ index 9117b59..3f4f497 100644
  }
  
  static int savestate_menu_slot_from_key(SDL_Keycode key) {
-@@ -5388,6 +5803,17 @@ static void savestate_menu_handle_key(SDL_Keycode key, int mod, int repeat) {
+@@ -5388,6 +5830,17 @@ static void savestate_menu_handle_key(SDL_Keycode key, int mod, int repeat) {
          return;
      if (savestate_menu_open_key && key == savestate_menu_open_key)
          return;
@@ -2216,7 +2393,7 @@ index 9117b59..3f4f497 100644
      slot = savestate_menu_slot_from_key(key);
      if (slot >= 0) {
          savestate_menu_slot = slot;
-@@ -5402,11 +5828,11 @@ static void savestate_menu_handle_key(SDL_Keycode key, int mod, int repeat) {
+@@ -5402,11 +5855,11 @@ static void savestate_menu_handle_key(SDL_Keycode key, int mod, int repeat) {
      } else if (key == SDLK_RIGHT || key == SDLK_DOWN) {
          savestate_menu_move(+1);
      } else if (key == SDLK_s) {
@@ -2231,7 +2408,7 @@ index 9117b59..3f4f497 100644
      }
  }
  
-@@ -5446,12 +5872,21 @@ static void savestate_menu_poll_nav(uint32_t now_ms) {
+@@ -5446,12 +5899,21 @@ static void savestate_menu_poll_nav(uint32_t now_ms) {
      }
      prev_toggle = toggle;
  
@@ -2259,7 +2436,7 @@ index 9117b59..3f4f497 100644
      prev_load = load;
      prev_save = save;
      prev_cancel = cancel;
-@@ -5545,8 +5980,8 @@ static void rewind_pause_present(void) {
+@@ -5545,8 +6007,8 @@ static void rewind_pause_present(void) {
          SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
          SDL_RenderClear(sdl_renderer);
          if (sdl_texture && s_sw_hold_valid)
@@ -2270,7 +2447,7 @@ index 9117b59..3f4f497 100644
          host_osd_draw_sdl(sdl_renderer);
          SDL_RenderPresent(sdl_renderer);
      }
-@@ -5667,12 +6102,15 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+@@ -5667,12 +6129,15 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
      /* Check debug server input override. */
      int override = debug_server_get_input_override();
  #else
@@ -2289,7 +2466,7 @@ index 9117b59..3f4f497 100644
  
      runtime_perf_frame_begin();
      RuntimePerfFrameScope runtime_perf_frame_scope;
-@@ -5830,7 +6268,10 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+@@ -5830,7 +6295,10 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                      netplay_soft_exit("netplay_escape");
                      return ep;
                  }
@@ -2301,7 +2478,7 @@ index 9117b59..3f4f497 100644
                      host_keymap_match(HOST_KEYMAP_REWIND, (int)key, (int)mod)) {
                      psx_rewind_toggle();
                  }
-@@ -5849,6 +6290,12 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+@@ -5849,6 +6317,12 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                                             (int)mod)) {
                      fps_telemetry_toggle();
                  }
@@ -2314,7 +2491,7 @@ index 9117b59..3f4f497 100644
                  /* Host volume: config.ini [KeyMap] VolumeUp/VolumeDown
                   * (defaults: keypad +/-). 5% steps; shows right-side bar. */
                  else if (host_keymap_match(HOST_KEYMAP_VOLUME_UP, (int)key,
-@@ -6013,6 +6460,24 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+@@ -6013,6 +6487,24 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
       *    entry is touched (via the movie-id byte), so nothing else is disturbed.
       *  - no table configured (generic): hold START so a movie whose handler polls
       *    the pad aborts itself (can't reach unskippable movies). */
@@ -2339,7 +2516,7 @@ index 9117b59..3f4f497 100644
      int fmv_skip_active = 0;
      /* Never inject START / poke movie totals under netplay — host-side skip
       * forks peers (and stomps SIO after sealed publish during resim). */
-@@ -6059,6 +6524,11 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+@@ -6059,6 +6551,11 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
  
      if (g_headless) {
          ep.skip_pace = 1;
@@ -2351,7 +2528,7 @@ index 9117b59..3f4f497 100644
          return ep;
      }
  
-@@ -6562,6 +7032,54 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+@@ -6562,6 +7059,54 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
  #ifndef PSX_SDL_NO_RENDER
      int src_w = (int)present_w * active_scale;
      int src_h = (int)h * active_scale;
@@ -2406,7 +2583,7 @@ index 9117b59..3f4f497 100644
      if (g_gl_active) {
          /* OpenGL present: upload the active display rect and draw a full-screen
           * quad. SDL_GL_SwapWindow handles vsync; the wall-clock pacer above
-@@ -6578,14 +7096,31 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+@@ -6578,14 +7123,31 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
      if (!sdl_renderer || !sdl_texture)
          return ep;
      SDL_Rect src = { 0, 0, src_w, src_h };
@@ -2440,7 +2617,7 @@ index 9117b59..3f4f497 100644
      if (src_w > 0 && src_h > 0 && src_h < tex_h) {
          static uint32_t s_black_pad[640 * 4]; /* covers g_video_scale <= 4 */
          const int pad_cap = (int)(sizeof(s_black_pad) / sizeof(s_black_pad[0]));
-@@ -6593,7 +7128,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+@@ -6593,7 +7155,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
          for (int i = 0; i < pad_w; i++)
              s_black_pad[i] = 0xFF000000u;
          SDL_Rect pad = { 0, src_h, pad_w, 1 };
@@ -2449,7 +2626,7 @@ index 9117b59..3f4f497 100644
                            (int)(pad_w * sizeof(uint32_t)));
      }
  
-@@ -6628,11 +7163,12 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+@@ -6628,11 +7190,12 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
       * bands flashed as a bright strip on some X11 SDL drivers. */
      SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
      SDL_RenderClear(sdl_renderer);
@@ -2463,7 +2640,7 @@ index 9117b59..3f4f497 100644
      s_sw_hold_valid = 1;
  
      /* Vsync self-heal. The renderer is created with PRESENTVSYNC for
-@@ -8541,6 +9077,21 @@ namespace {
+@@ -8541,6 +9104,33 @@ namespace {
          PSXRecompV4::save_user_settings(g_lnch_settings_path, settings);
      }
  
@@ -2481,11 +2658,23 @@ index 9117b59..3f4f497 100644
 +    (void)PSXRecompV4::save_user_settings(g_lnch_settings_path, settings);
 +}
 +
++static void persist_scanline_settings(void) {
++    if (g_lnch_settings_path.empty()) return;
++    PSXRecompV4::UserSettings settings =
++        PSXRecompV4::load_user_settings(g_lnch_settings_path);
++    if (settings.parse_error) return;
++    VideoScanlineParams sp; video_filter_scanline_get(&sp);
++    settings.scanline_opacity = sp.opacity; settings.has_scanline_opacity = true;
++    settings.scanline_size    = sp.size;    settings.has_scanline_size = true;
++    settings.scanline_glow    = sp.glow;    settings.has_scanline_glow = true;
++    (void)PSXRecompV4::save_user_settings(g_lnch_settings_path, settings);
++}
++
 +namespace {
      void ae_np_set_lobby_url(void*, const char* url) {
          g_lnch_lobby_url = url && url[0] ? url : psx_lobby_default_url();
          ae_np_save_identity(nullptr, g_lnch_lobby_url.c_str());
-@@ -10011,6 +10562,17 @@ namespace {
+@@ -10011,6 +10601,17 @@ namespace {
          gi->has_turbo_loads = turbo_loads_offered_b ? 1 : 0;
          gi->has_geometry_precision = 1;
          gi->has_rewind_depth = 1;
@@ -2503,7 +2692,7 @@ index 9117b59..3f4f497 100644
          if (language_labels && num_languages > 0) {
              gi->language_labels = language_labels;
              gi->num_languages = num_languages;
-@@ -10047,6 +10609,10 @@ namespace {
+@@ -10047,6 +10648,10 @@ namespace {
  #endif
  
  int main(int argc, char** argv) {
@@ -2514,7 +2703,7 @@ index 9117b59..3f4f497 100644
      /* Force line-buffered output so messages appear even if killed. */
      std::setvbuf(stdout, nullptr, _IOLBF, 0);
      std::setvbuf(stderr, nullptr, _IOLBF, 0);
-@@ -10140,6 +10706,10 @@ int main(int argc, char** argv) {
+@@ -10140,6 +10745,10 @@ int main(int argc, char** argv) {
          } else if (std::strcmp(argv[i], "--headless") == 0) {
              g_headless = 1;
              force_no_launcher = true;
@@ -2525,7 +2714,7 @@ index 9117b59..3f4f497 100644
          } else if (std::strcmp(argv[i], "--netplay") == 0) {
              net_cfg.enabled = 1;
          } else if (std::strcmp(argv[i], "--net-slot") == 0 && i + 1 < argc) {
-@@ -10182,6 +10752,9 @@ int main(int argc, char** argv) {
+@@ -10182,6 +10791,9 @@ int main(int argc, char** argv) {
              force_no_launcher = true;
          }
      }
@@ -2535,7 +2724,7 @@ index 9117b59..3f4f497 100644
  
      std::string default_game_config_storage;
      if (!game_config_path) {
-@@ -10378,6 +10951,15 @@ int main(int argc, char** argv) {
+@@ -10378,6 +10990,18 @@ int main(int argc, char** argv) {
                  gc.runtime.video_perspective_texturing ? 1 : 0;
              g_video_renderer   = gc.runtime.video_renderer;
              g_video_screen     = gc.runtime.video_screen_kind;
@@ -2548,10 +2737,13 @@ index 9117b59..3f4f497 100644
 +                                 "psxrecomp: [video] filter \"%s\" is not a known filter — ignored\n",
 +                                 gc.runtime.video_filter.c_str());
 +            }
++            if (gc.runtime.video_scanline_opacity >= 0) g_scan.opacity = (float)gc.runtime.video_scanline_opacity;
++            if (gc.runtime.video_scanline_size >= 0)    g_scan.size    = (float)gc.runtime.video_scanline_size;
++            if (gc.runtime.video_scanline_glow >= 0)    g_scan.glow    = (float)gc.runtime.video_scanline_glow;
              g_video_aspect_num = gc.runtime.video_aspect_num;
              g_video_aspect_den = gc.runtime.video_aspect_den;
              g_low_latency_input = gc.runtime.video_low_latency_input ? 1 : 0;
-@@ -10733,6 +11315,10 @@ int main(int argc, char** argv) {
+@@ -10733,6 +11357,13 @@ int main(int argc, char** argv) {
          if (us.has_perspective_texturing)
              g_video_perspective_texturing = us.perspective_texturing ? 1 : 0;
          if (us.has_screen_kind)    g_video_screen    = us.screen_kind;
@@ -2559,10 +2751,13 @@ index 9117b59..3f4f497 100644
 +            int k = 0;
 +            if (video_filter_from_name(us.video_filter.c_str(), &k)) g_video_filter = k;
 +        }
++        if (us.has_scanline_opacity) g_scan.opacity = (float)us.scanline_opacity;
++        if (us.has_scanline_size)    g_scan.size    = (float)us.scanline_size;
++        if (us.has_scanline_glow)    g_scan.glow    = (float)us.scanline_glow;
          if (us.has_auto_skip_fmv)  g_auto_skip_fmv   = us.auto_skip_fmv ? 1 : 0;
          /* turbo_loads is deliberately NOT restored from settings.toml. It is a
           * write-only latch: the launcher stopped drawing a Turbo loads row when
-@@ -10890,6 +11476,11 @@ int main(int argc, char** argv) {
+@@ -10890,6 +11521,11 @@ int main(int argc, char** argv) {
       * PSX_FRAME_INTERPOLATION=0/1; PSX_FRAME_INTERPOLATION_FPS=0|90+. */
      if (const char *e = std::getenv("PSX_LOW_LATENCY_INPUT")) g_low_latency_input = atoi(e) ? 1 : 0;
      if (const char *e = std::getenv("PSX_VSYNC"))             g_video_vsync       = atoi(e);
@@ -2574,7 +2769,7 @@ index 9117b59..3f4f497 100644
      if (const char *e = std::getenv("PSX_SMOOTH_60FPS"))
          psx_smooth_60fps_set(atoi(e) ? 1 : 0);
      if (const char *e = std::getenv("PSX_FRAME_INTERPOLATION"))
-@@ -11159,6 +11750,7 @@ int main(int argc, char** argv) {
+@@ -11159,6 +11795,7 @@ int main(int argc, char** argv) {
              seed.perspective_texturing = (g_video_perspective_texturing != 0);
              seed.has_perspective_texturing = true;
              seed.screen_kind = g_video_screen;            seed.has_screen_kind = true;
@@ -2582,7 +2777,7 @@ index 9117b59..3f4f497 100644
              seed.auto_skip_fmv = (g_auto_skip_fmv != 0);
              seed.has_auto_skip_fmv = skip_fmv_offered;
              seed.turbo_loads = (g_turbo_loads_enabled != 0);
-@@ -11329,6 +11921,9 @@ int main(int argc, char** argv) {
+@@ -11329,6 +11966,9 @@ int main(int argc, char** argv) {
              ls.geometry_correction   = seed.geometry_correction ? 1 : 0;
              ls.perspective_texturing = seed.perspective_texturing ? 1 : 0;
              ls.screen_kind        = seed.screen_kind;
@@ -2592,7 +2787,7 @@ index 9117b59..3f4f497 100644
              ls.frame_interp       = seed.frame_interpolation ? 1 : 0;
              ls.frame_interp_fps   = seed.frame_interpolation_fps;
              ls.spu_hq             = seed.spu_hq ? 1 : 0;
-@@ -11564,6 +12159,11 @@ int main(int argc, char** argv) {
+@@ -11564,6 +12204,11 @@ int main(int argc, char** argv) {
                  seed.perspective_texturing = ls.perspective_texturing != 0;
                  seed.has_perspective_texturing = true;
                  seed.screen_kind           = ls.screen_kind;           seed.has_screen_kind           = true;
@@ -2604,19 +2799,21 @@ index 9117b59..3f4f497 100644
                  seed.frame_interpolation   = ls.frame_interp != 0;     seed.has_frame_interpolation   = true;
                  seed.frame_interpolation_fps = ls.frame_interp_fps;    seed.has_frame_interpolation_fps = true;
                  seed.audio_freq            = ls.audio_freq;            seed.has_audio_freq            = true;
-@@ -12139,6 +12739,11 @@ session_reboot:
+@@ -12139,6 +12784,13 @@ session_reboot:
      /* Present-time screen-colour model (verified-enhancement LUT). Default raw
       * is byte-identical; PSX_SCREEN env overrides this at scanout. */
      gpu_set_screen_kind(g_video_screen);
 +    /* Present-time video filter (video_filter.h). Default none = the
 +     * historical present path, untouched. */
 +    video_filter_set(g_video_filter);
++    video_filter_scanline_set(&g_scan);
++    video_filter_scanline_get(&g_scan);   /* clamped */
 +    if (g_video_filter != VF_NONE)
 +        std::fprintf(stdout, "psxrecomp: video filter %s\n", video_filter_name(g_video_filter));
      if (g_video_scale > 1 || g_video_texfilter)
          std::fprintf(stdout,
                       "psxrecomp: supersampling %dx (antialiasing %s, texture filter %s)\n",
-@@ -13073,6 +13678,7 @@ session_reboot:
+@@ -13073,6 +13725,7 @@ session_reboot:
      shutdown_runtime();
      if (g_gl_active) gl_renderer_shutdown();
      if (g_vk_active) vk_renderer_shutdown();
@@ -2624,7 +2821,7 @@ index 9117b59..3f4f497 100644
      SDL_DestroyTexture(sdl_texture);   /* NULL-safe in GL mode */
      SDL_DestroyRenderer(sdl_renderer); /* NULL-safe in GL mode */
      SDL_DestroyWindow(sdl_window);
-@@ -13122,6 +13728,9 @@ soft_return_lobby:
+@@ -13122,6 +13775,9 @@ soft_return_lobby:
          ls.geometry_correction = g_video_geometry_correction ? 1 : 0;
          ls.perspective_texturing = g_video_perspective_texturing ? 1 : 0;
          ls.screen_kind = g_video_screen;
@@ -2634,7 +2831,7 @@ index 9117b59..3f4f497 100644
          ls.frame_interp = g_frame_interpolation ? 1 : 0;
          ls.frame_interp_fps = g_frame_interpolation_fps;
          ls.spu_hq = g_audio_spu_hq ? 1 : 0;
-@@ -13377,6 +13986,11 @@ soft_return_lobby:
+@@ -13377,6 +14033,11 @@ soft_return_lobby:
                  us.has_perspective_texturing = true;
                  us.screen_kind = ls.screen_kind;
                  us.has_screen_kind = true;
@@ -2646,7 +2843,7 @@ index 9117b59..3f4f497 100644
                  us.frame_interpolation = ls.frame_interp != 0;
                  us.has_frame_interpolation = true;
                  us.frame_interpolation_fps = ls.frame_interp_fps;
-@@ -13429,6 +14043,17 @@ soft_return_lobby:
+@@ -13429,6 +14090,17 @@ soft_return_lobby:
              g_video_geometry_correction = ls.geometry_correction ? 1 : 0;
              g_video_perspective_texturing = ls.perspective_texturing ? 1 : 0;
              g_video_screen = ls.screen_kind;
@@ -2666,10 +2863,10 @@ index 9117b59..3f4f497 100644
               * mod_runtime_activate_plugins() ran. Applying them here would
 diff --git a/runtime/src/video_filter.c b/runtime/src/video_filter.c
 new file mode 100644
-index 0000000..8642054
+index 0000000..c1280c4
 --- /dev/null
 +++ b/runtime/src/video_filter.c
-@@ -0,0 +1,668 @@
+@@ -0,0 +1,696 @@
 +/* video_filter.c — CPU reference implementations of the present-time video
 + * filters (see video_filter.h for scope, provenance and the parity contract
 + * with the OpenGL shaders in gpu_gl_renderer.c).
@@ -2763,6 +2960,16 @@ index 0000000..8642054
 +void video_filter_set(int kind) { s_kind = vf_valid(kind) ? kind : VF_NONE; }
 +int  video_filter_get(void)     { return s_kind; }
 +
++static VideoScanlineParams s_scan = { VF_SCAN_OPACITY_DEFAULT, VF_SCAN_SIZE_DEFAULT, VF_SCAN_GLOW_DEFAULT };
++static float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
++void video_filter_scanline_set(const VideoScanlineParams* p) {
++    if (!p) return;
++    s_scan.opacity = clampf(p->opacity, 0.0f, 1.0f);
++    s_scan.size    = clampf(p->size, 0.10f, 0.80f);
++    s_scan.glow    = clampf(p->glow, 0.0f, 1.0f);
++}
++void video_filter_scanline_get(VideoScanlineParams* out) { if (out) *out = s_scan; }
++
 +int video_filter_cpu_scale(int kind) {
 +    if (!vf_valid(kind) || kind == VF_NONE) return 1;
 +    if (video_filter_is_upscaler(kind)) return video_filter_scale(kind);
@@ -2807,14 +3014,27 @@ index 0000000..8642054
 +/* Row weights for one source line expanded to VF_SW_PRESCALE rows, in
 + * 1/256ths. SCANLINES: bright beam, dark gap. CRT: softer beam roll-off. */
 +static const uint32_t s_row_w_sharp[VF_SW_PRESCALE]     = { 256, 256, 256 };
-+static const uint32_t s_row_w_scanlines[VF_SW_PRESCALE] = { 256, 256, 112 };
 +static const uint32_t s_row_w_crt[VF_SW_PRESCALE]       = { 190, 256, 150 };
++/* Scanline rows follow the live parameters: the bottom third is the gap
++ * (darkened by opacity, partially refilled by glow), the core is brightened
++ * by glow. A coarse stand-in for the shader's per-pixel beam profile. */
++static void scanline_row_weights(uint32_t w[VF_SW_PRESCALE]) {
++    const float core = 1.0f + 0.35f * s_scan.glow;
++    const float gap  = (1.0f - s_scan.opacity) + 0.35f * s_scan.glow * s_scan.opacity;
++    const float mid  = 1.0f + 0.15f * s_scan.glow;
++    w[0] = (uint32_t)(mid  * 256.0f + 0.5f);
++    w[1] = (uint32_t)(core * 256.0f + 0.5f);
++    w[2] = (uint32_t)(gap  * 256.0f + 0.5f);
++}
 +
 +static inline uint32_t scale_rgb(uint32_t rgb, uint32_t wgt) {
-+    if (wgt >= 256) return rgb;
++    if (wgt == 256) return rgb;
 +    uint32_t r = ((rgb >> 16) & 0xFF) * wgt >> 8;
 +    uint32_t g = ((rgb >> 8) & 0xFF) * wgt >> 8;
 +    uint32_t b = (rgb & 0xFF) * wgt >> 8;
++    if (r > 255) r = 255;
++    if (g > 255) g = 255;
++    if (b > 255) b = 255;
 +    return (r << 16) | (g << 8) | b;
 +}
 +
@@ -3324,7 +3544,12 @@ index 0000000..8642054
 +    if (src_pitch < w || dst_pitch < w * N) return 0;
 +    switch (kind) {
 +    case VF_SHARP:       prescale_rows(src, src_pitch, w, h, dst, dst_pitch, s_row_w_sharp); break;
-+    case VF_SCANLINES:   prescale_rows(src, src_pitch, w, h, dst, dst_pitch, s_row_w_scanlines); break;
++    case VF_SCANLINES: {
++        uint32_t rw[VF_SW_PRESCALE];
++        scanline_row_weights(rw);
++        prescale_rows(src, src_pitch, w, h, dst, dst_pitch, rw);
++        break;
++    }
 +    case VF_CRT:         prescale_rows(src, src_pitch, w, h, dst, dst_pitch, s_row_w_crt); break;
 +    case VF_SCALE2X:     scale2x(src, src_pitch, w, h, dst, dst_pitch); break;
 +    case VF_SCALE3X:     scale3x(src, src_pitch, w, h, dst, dst_pitch); break;
@@ -3340,10 +3565,10 @@ index 0000000..8642054
 +}
 diff --git a/runtime/tests/test_video_filter.c b/runtime/tests/test_video_filter.c
 new file mode 100644
-index 0000000..d926827
+index 0000000..73304c1
 --- /dev/null
 +++ b/runtime/tests/test_video_filter.c
-@@ -0,0 +1,260 @@
+@@ -0,0 +1,271 @@
 +/* test_video_filter.c — contract tests for the CPU video-filter reference
 + * (runtime/src/video_filter.c).
 + *
@@ -3580,12 +3805,23 @@ index 0000000..d926827
 +    int ow, oh;
 +    uint32_t* d = run(VF_SCANLINES, src, 2, 1, &ow, &oh);
 +    CHECK(ow == 2 * VF_SW_PRESCALE && oh == VF_SW_PRESCALE, "prescale dims");
-+    CHECK(d[0] == WHITE && d[1] == WHITE && d[2] == WHITE, "prescale row 0 untouched");
-+    CHECK(d[3] == 0xFF808080u, "prescale copies pixel 1");
++    CHECK(d[0] == WHITE && d[1] == WHITE && d[2] == WHITE, "prescale row 0: white stays white (glow clamps)");
++    /* Row 0/1 carry the (glow-brightened) line: never darker than the source,
++     * still neutral grey. */
++    CHECK((d[3] & 0xFF) >= 0x80 && ((d[3] >> 8) & 0xFF) == (d[3] & 0xFF), "prescale line row >= source: %08X", d[3]);
 +    /* Last row of the triple is the dark gap: strictly darker, still grey. */
 +    uint32_t gap = d[2 * ow + 0];
 +    CHECK((gap & 0xFF) < 0xFF && ((gap >> 8) & 0xFF) == (gap & 0xFF) &&
 +          ((gap >> 16) & 0xFF) == (gap & 0xFF), "scanline gap row is a darker grey: %08X", gap);
++    /* Parameters steer it: opacity 1 / glow 0 -> black gap; opacity 0 -> no gap. */
++    VideoScanlineParams sp = { 1.0f, 0.35f, 0.0f };
++    video_filter_scanline_set(&sp);
++    free(d); d = run(VF_SCANLINES, src, 2, 1, &ow, &oh);
++    CHECK(d[2 * ow + 0] == BLACK, "opacity 1, glow 0 -> black gap: %08X", d[2 * ow + 0]);
++    sp.opacity = 0.0f; video_filter_scanline_set(&sp);
++    free(d); d = run(VF_SCANLINES, src, 2, 1, &ow, &oh);
++    CHECK(d[2 * ow + 0] == WHITE, "opacity 0 -> no gap: %08X", d[2 * ow + 0]);
++    sp.opacity = VF_SCAN_OPACITY_DEFAULT; sp.glow = VF_SCAN_GLOW_DEFAULT; video_filter_scanline_set(&sp);
 +    free(d);
 +    d = run(VF_SHARP, src, 2, 1, &ow, &oh);
 +    for (int i = 0; i < ow * oh; i++)

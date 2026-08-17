@@ -371,3 +371,10 @@ point, production input-override, `psx_frontend_request_quit`,
 unpaced, scriptable run for CI/bug-repro; steps are debug-server command lines
 plus wait/expect/quit. Verified on Mega Man 8 (release build): load slot →
 screenshot → filtered present capture → bug_report bundle → exit 0, ~5 s.
+
+2026-08-17 additions folded into patch 4's files: CRT one-line flicker fix
+(`fetch_px` reciprocal-multiply floor), parametric scanlines (opacity/size/glow:
+`VideoScanlineParams`, ESC rows, `[video] scanline_*`, debug `video_filter`
+scan_* fields), and `debug_server_shutdown()` `shutdown(SHUT_RDWR)` before
+`close()` so the I/O thread's `accept()` wakes — every windowed quit on a Linux
+debug build used to hang in `SDL_WaitThread`.

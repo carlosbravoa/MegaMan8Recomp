@@ -91,6 +91,11 @@ aspect_ratio = "4:3"
 # scale2x, scale3x, 2xsai, super2xsai, supereagle, xbr2x, xbr3x, xbr4x,
 # scanlines, crt.
 filter = "none"
+# Parameters of the "scanlines" filter (0..1; see psxrecomp/docs/VIDEO_FILTERS.md).
+# Uncomment to change the title defaults; the ESC menu / settings.toml override.
+# scanline_opacity = 0.60
+# scanline_size    = 0.35
+# scanline_glow    = 0.50
 # Off for the bring-up baseline (MOVIE/*.STR MDEC + XA/CDDA). Revisit once the
 # MM8 STR player loop is understood.
 auto_skip_fmv = false

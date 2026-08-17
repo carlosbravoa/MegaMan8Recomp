@@ -399,6 +399,11 @@ Default `none` is byte-identical. Verified in-game with
 `tools/video_filter_check.py`: GL shader output == CPU reference to ≤1 LSB for
 all eight upscalers (title, intro FMV, intro-stage gameplay); software
 renderer path captured too. Vulkan is unfiltered by design.
+2026-08-17: CRT one-line flicker fixed (reciprocal-multiply floor bug in the GL
+final pass; verified stable over consecutive captures); scanlines rewritten with
+opacity / size / glow parameters (ESC menu rows, settings.toml, debug cmd) and a
+gamma-correct bloom; debug-build QUIT hang fixed (accept() not woken by close —
+`shutdown()` first, framework fix).
 
 ## #16 — GL frame interpolation thread never swaps on this box — OPEN (pre-existing, framework)
 
