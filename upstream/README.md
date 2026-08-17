@@ -9,7 +9,7 @@ pinned to them:
 
 | submodule | pinned to | = upstream + |
 |---|---|---|
-| `psxrecomp` | `carlosbravoa/psxrecomp` branch **`mm8`** (`2276657`) | `mstan/psxrecomp` `dca482e` + 5 commits (§1–7 below) |
+| `psxrecomp` | `carlosbravoa/psxrecomp` branch **`mm8`** (`e585beb`) | `mstan/psxrecomp` `dca482e` + 7 commits (§1–7 below) |
 | `recomp-ui` | `carlosbravoa/recomp-ui` branch **`mm8`** (`4ee44bd`) | `mstan/recomp-ui` `1b91c14` + 1 commit (§ui-1) |
 
 So `git submodule update --init --recursive` reproduces the exact framework
@@ -22,7 +22,7 @@ uncommitted submodule tree. The fork replaces that.)
 Commits on `psxrecomp/mm8` (oldest first): `ace0c3a` gpu depth24 span (§1),
 `c3294e0` bg2d unmasked sra (§2), `b293249` portable autocompile (§3),
 `b4cb44b` video filters + bug reports + headless scripts (§4–6),
-`0d2228d`→`2276657` disc trees (§7). `recomp-ui/mm8`: `4ee44bd` video filter row.
+`0d2228d`→`2276657` disc trees (§7), `53d1ad8` vram_upload_log (§5), `e585beb` compact ESC scanline row (§4). `recomp-ui/mm8`: `4ee44bd` video filter row.
 
 ## Workflow
 
@@ -368,6 +368,11 @@ screenshot → filtered present capture → bug_report bundle → exit 0, ~5 s.
 scan_* fields), and `debug_server_shutdown()` `shutdown(SHUT_RDWR)` before
 `close()` so the I/O thread's `accept()` wakes — every windowed quit on a Linux
 debug build used to hang in `SDL_WaitThread`.
+Follow-up: the three ESC scanline rows overflowed the 12-row panel (QUIT was
+cut off) — collapsed into one `[DARK 60%] SIZE 35% GLOW 50%` row shown only
+while the scanlines filter is active (LEFT/RIGHT adjust, ENTER cycles the
+bracket), and `psx_savestate_menu.c` now shrinks the row pitch to fit whatever
+row count it is handed (max 16) instead of dropping rows.
 
 ---
 
