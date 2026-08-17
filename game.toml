@@ -2,11 +2,13 @@
 # Review before shipping. Runtime quirks / overlay seeds still need hand work.
 
 [game]
-name = "MegaMan8"
+name = "Mega Man 8"
 id = "SLUS-00453"
 players = 1
 exe = "disc/SLUS_004.53"
-disc = "/home/carlos/extended/devel/games/mm8Recomp/game-assets/Mega Man 8 (USA)/Mega Man 8 (USA).cue"
+# Local, gitignored Redump dump (bin/cue, 3 tracks: MODE2/2352 data + 2 CDDA).
+# Keep the multi-track cue — do NOT convert to a cooked ISO (drops XA/CDDA).
+disc = "game-assets/Mega Man 8 (USA)/Mega Man 8 (USA).cue"
 load_address = "0x800C0000"
 entry_pc = "0x800C0B3C"
 text_size = "0x00113000"
@@ -30,20 +32,145 @@ known_sha1 = [
 seeds = "seeds/ghidra_funcs.txt"
 out_dir = "generated"
 strict = true
+# Emit a psx_mod_function_entry() call at these addresses so trusted mod plugins
+# can hook them. Inert unless a plugin registers for the address.
+# 0x801023BC = camera min/max clamp (inset the camera at stage boundaries)
+# 0x80101C54 = set-table spawn window (activate objects past the wide edge)
+# 0x801014E8 = stage loader (developer stage-select override)
+# 0x800F90D4 / 0x800F98D8 = the two background builders (parallax quads and the
+# 16x16 tile columns). The camera inset must be applied HERE, not at the clamp
+# routine: func_80100E00 rewrites the scroll global every frame after that clamp
+# runs, so only a render-time inset survives to the screen.
+mod_function_entry_funcs = ["0x801023BC", "0x80101C54", "0x801014E8", "0x800F90D4", "0x800F98D8"]
 
 [runtime]
+# Dev debug-server port (TCP JSON protocol, RelWithDebInfo/Debug builds only).
+# Distinct from every sibling title (X4 = 4525) so concurrent dev runs never
+# collide.
+debug_port = 4545
 window_title = "MegaMan8 Recompiled"
 memcard_dir = "saves"
+# HLE BIOS tier (framework default ON since 2026-07-06): boot shell-skip +
+# kernel B0 events host-side; everything else falls through to the real
+# recompiled BIOS (OpenBIOS or SCPH1001). Set false (or PSX_BIOS_HLE=0) to
+# compare against the authentic LLE boot when bisecting a bring-up bug.
+bios_hle = true
+# Overlay acceleration: MM8 streams its stage/engine code from OVL/*.BIN
+# (DEMO.BIN, STAGE00..STAGE0D.BIN) into RAM and executes it. The overlay cache
+# captures those dirty-RAM regions generically (same pipeline as X4's ARC and
+# X6's ROCK overlays): captures -> compile_overlays.py -> shards under
+# <exe>/cache/SLUS-00453/ -> loader rescans + loads. Priority: static > gcc
+# shard > tcc shard > interp. backend "auto" = gcc if present, else bundled tcc.
+overlay_cache = true
+overlay_backend = "auto"
+# Compile freshly captured overlays DURING play and hot-load them, so a newly
+# visited area stops running interpreted within seconds instead of at the next
+# launch. Paths are relative to the project root (the cwd the runtime gives the
+# child). --captures/--out-dir are deliberately absent: the runtime injects
+# PSX_OVERLAY_CAPTURES / PSX_OVERLAY_CACHE_DIR, which compile_overlays.py
+# prefers, so the write location can never drift from where the loader reads.
+# --jobs 2 keeps the compile off the frame budget; tools/build_overlay_shards.sh
+# remains the offline bulk path.
+overlay_autocompile_cmd = "python3 psxrecomp/tools/compile_overlays.py --game-toml game.toml --recompiler build-recompiler/psxrecomp-game --runtime-include psxrecomp/runtime/include --project-root . --compiler gcc --cps --jobs 2"
+
+[audio]
+# Framework default (180 ms) until MM8's production cadence has been measured;
+# X4 runs at 60 ms — lower this once a soak shows no crackle.
+buffer_ms = 180
 
 [video]
 renderer = "opengl"
+# Native 4:3 is the DEFAULT and is a mathematical identity — with widescreen off
+# the presentation is byte-for-byte the original. The launcher's Aspect ratio
+# selector switches this at runtime (persisted to settings.toml); one build
+# serves both.
 aspect_ratio = "4:3"
+# Present-time video filter (psxrecomp/docs/VIDEO_FILTERS.md). "none" is the
+# byte-identical default; the launcher's Display -> Video filter row (persisted
+# to settings.toml) or PSX_VIDEO_FILTER override it. Tokens: none, sharp,
+# scale2x, scale3x, 2xsai, super2xsai, supereagle, xbr2x, xbr3x, xbr4x,
+# scanlines, crt.
+filter = "none"
+# Off for the bring-up baseline (MOVIE/*.STR MDEC + XA/CDDA). Revisit once the
+# MM8 STR player loop is understood.
+auto_skip_fmv = false
 
+# ── Widescreen (experimental, opt-in via the launcher) ────────────────────
+# MM8 is a pure-2D Capcom title of the X4 lineage, so it uses the framework's
+# NATIVE-WIDE path (full_2d) rather than the GTE squash hack: the game renders a
+# genuinely wider field of view instead of compressing one into 320 px.
+#
+# offer = true puts the Aspect ratio selector in the launcher. The game.toml
+# default above stays 4:3, so this changes nothing unless the player opts in.
+[widescreen]
+offer   = true
+full_2d = true
+
+# HUD re-anchoring. MM8 builds the player health/weapon/life HUD into a
+# dedicated double-buffered GP0 packet arena, separate from the background tile
+# arena (0x801C7000+) and the sprite arenas. Commands sourced from this range
+# are re-anchored to the true 16:9 edges (left-third pieces to the left edge);
+# everything else is untouched.
+#
+# Found by dumping a gameplay frame and isolating ordering-table rank 8: a 0x2C
+# quad plus nine 0x7C sprites at native x 10..30, y 24..88 — the bar, the weapon
+# icon and the life counter. Both buffers observed across 8 frames:
+#   0x80152974..0x80152AE4  and  0x80152D54..0x80152DD4
+# The range below brackets both with margin; nothing else draws from it.
+#
+# The unfiltered nw_hud_corners mode must stay OFF: MM8's world is itself made
+# of screen-space 2D primitives, so an unfiltered rule would drag scenery too.
+nw_left_hud_packet_lo = "0x80152900"
+nw_left_hud_packet_hi = "0x80152E00"
+
+# The dominant mechanism for a 2D title. The recompiler scans for the game's
+# screen-extent reject — a width compare against 320 paired with a height
+# compare — and widens every width compare through psx_ws_x_margin(), which is
+# identity (margin 0) at 4:3.
+#
+# MM8's funnel is func_800FA050: `slti v1, v1, 256` (Y) paired with
+# `slti v0, v0, 320` (X), each rejecting through `beq ..., zero`. Its height
+# bound is 0x100 (256), NOT the framework default 0xE0/0xF1 nor X4's 0xF0 —
+# without this override the detector does not qualify the function and the
+# widening silently does nothing.
+[widescreen.cull]
+auto_screen_x = true
+screen_h_imms = ["0x100"]
+
+# Background tile loop. MM8's renderer is func_800F98D8: 21 columns of 16x16
+# tiles, two layers, packets built in scratchpad and DMA'd from 0x801CB400.
+# Unlike X4/X5/X6 it has NO tile ring and no leading-edge streamer — it indexes
+# the tile map directly (map base at layer+12, 16x16 blocks of 512 bytes, tile
+# definitions at 0x80171C3C). So only the three renderer sites are hooked; the
+# stream_left/right sites do not exist here, and the ring-refill is disabled by
+# the mod plugin (see src/mods/mm8_widescreen_plugin.c).
+#
+#   count_site    sltiu v0,s2,21    the 21-column loop bound  -> 21 + 2*LEFT
+#   startcol_site sra   v0,v0,20    start column (UNMASKED)   -> col - LEFT
+#   startx_site   subu  v1,zero,v1  start screen X            -> x - LEFT*16
+#
+# All three are identity at 4:3 (LEFT = 0), so the faithful path is unchanged.
+[widescreen.bg2d]
+count_site    = "0x800F99CC"
+startcol_site = "0x800F993C"
+startx_site   = "0x800F994C"
+
+# Controller: HARDCODED digital. MM8 (US Jan 1997) predates the DualShock
+# (Nov 1997) like X4: with an analog pad (id 0x73) presented the game ignores
+# every button — verified 2026-08-15 on the debug build: the launcher's default
+# `p1_mode = "analog"` left the title/attract loop ignoring START entirely,
+# while the digital pad (id 0x41) is accepted immediately. Digital is the ONLY
+# pad type the game supports, so lock_mode hides the launcher's whole pad-mode
+# selector and forces every port to default_mode (same pattern as X4/Tomba 2) —
+# a stale settings.toml `p1_mode = "analog"` can no longer break input.
 [controller]
 default_mode = "digital"
+deadzone     = 6553
+lock_mode    = true
 
 # Online mount gate: digests + track count + optional TOC fingerprint
 # (see docs/NETPLAY.md).
+multitap_analog = true
 [netplay]
 require_cue = true
 required_tracks = 3

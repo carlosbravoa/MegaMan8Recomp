@@ -1,0 +1,26 @@
+format_version = 5
+id = "mm8.enhancement.widescreen"
+version = "1.0.0"
+name = "Mega Man 8 Widescreen"
+author = "mm8Recomp"
+description = "Experimental native-wide 16:9 field of view. Widens Mega Man 8's own screen-extent culling so more of the stage is genuinely rendered, rather than stretching or cropping the 4:3 image."
+resolver = "declarative"
+save_compatibility = "shared"
+
+# game_id only: no disc_sha256, so the feature applies to any verified
+# SLUS-00453 dump. An exact digest is only mandatory for features that overlay
+# disc DATA (mod_packages.cpp: "feature disc overlays require an exact
+# disc_sha256"); this one changes presentation, not disc content.
+[[target]]
+game_id = "SLUS-00453"
+
+[[feature]]
+id = "widescreen"
+name = "Widescreen (Experimental)"
+description = "Render Mega Man 8 at a wider field of view instead of 4:3. Experimental: background and HUD edge behaviour at the revealed margins is still being validated."
+group = "Display"
+default_enabled = false
+
+[[plugin]]
+feature = "widescreen"
+id = "mm8.widescreen"

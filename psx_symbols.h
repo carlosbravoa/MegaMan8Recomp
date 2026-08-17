@@ -7,3 +7,295 @@
 /* guessed: SYSTEM.CNF / EXE entry PC (probe seed) */
 #define PSX_FN_BootEntry 0x800C0B3Cu
 #define func_800C0B3C BootEntry  /* alias */
+
+/* guessed: references the literal "This is not SEQ Data.\n" */
+#define PSX_FN_SsSeqOpen_checkFormat 0x800C2C5Cu
+#define func_800C2C5C SsSeqOpen_checkFormat  /* alias */
+
+/* guessed: references the literal "Can't Open Sequence data any more\n\n" */
+#define PSX_FN_SsSeqOpen_noSlot 0x800C2F84u
+#define func_800C2F84 SsSeqOpen_noSlot  /* alias */
+
+/* confirmed: logs its own name in the literal "VSync: timeout\n" */
+#define PSX_FN_VSync 0x800CE050u
+#define func_800CE050 VSync  /* alias */
+
+/* confirmed: logs its own name in the literal "CdInit: Init failed\n" */
+#define PSX_FN_CdInit 0x800CEC24u
+#define func_800CEC24 CdInit  /* alias */
+
+/* confirmed: logs its own name in the literal "DiskError: " */
+#define PSX_FN_DiskError 0x800CF4A0u
+#define func_800CF4A0 DiskError  /* alias */
+
+/* confirmed: logs its own name in the literal "CD_init:" */
+#define PSX_FN_CD_init 0x800D0658u
+#define func_800D0658 CD_init  /* alias */
+
+/* confirmed: logs its own name in the literal "CdRead: sector error\n" */
+#define PSX_FN_CdRead 0x800D0BA0u
+#define func_800D0BA0 CdRead  /* alias */
+
+/* confirmed: logs its own name in the literal "CdRead: Shell open...\n" (shares its evidence with 0x800D0BA0; suffixed to stay unique) */
+#define PSX_FN_CdRead_800D0DC4 0x800D0DC4u
+#define func_800D0DC4 CdRead_800D0DC4  /* alias */
+
+/* confirmed: Psy-Q library printf: the overwhelming majority of its call sites stage a format-string address in $a0 */
+#define PSX_FN_printf_lib 0x800D2B34u
+#define func_800D2B34 printf_lib  /* alias */
+
+/* confirmed: logs its own name in the literal "ResetGraph:jtb=%08x,env=%08x\n" */
+#define PSX_FN_ResetGraph 0x800D37C0u
+#define func_800D37C0 ResetGraph  /* alias */
+
+/* confirmed: logs its own name in the literal "PutDispEnv(%08x)...\n" */
+#define PSX_FN_PutDispEnv 0x800D440Cu
+#define func_800D440C PutDispEnv  /* alias */
+
+/* confirmed: BIOS call thunk -> A0(0x70) = _bu_init */
+#define PSX_FN_bios__bu_init 0x800D650Cu
+#define func_800D650C bios__bu_init  /* alias */
+
+/* confirmed: BIOS call thunk -> A0(0xab) = A0(0xab) */
+#define PSX_FN_bios_A0_0xab_ 0x800D651Cu
+#define func_800D651C bios_A0_0xab_  /* alias */
+
+/* confirmed: BIOS call thunk -> A0(0xac) = A0(0xac) */
+#define PSX_FN_bios_A0_0xac_ 0x800D652Cu
+#define func_800D652C bios_A0_0xac_  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x4a) = InitCard */
+#define PSX_FN_bios_InitCard 0x800D653Cu
+#define func_800D653C bios_InitCard  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x4b) = StartCard */
+#define PSX_FN_bios_StartCard 0x800D654Cu
+#define func_800D654C bios_StartCard  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x4e) = write_card_sector */
+#define PSX_FN_bios_write_card_sector 0x800D6594u
+#define func_800D6594 bios_write_card_sector  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x50) = allow_new_card */
+#define PSX_FN_bios_allow_new_card 0x800D65A4u
+#define func_800D65A4 bios_allow_new_card  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x3f) = std_out_puts */
+#define PSX_FN_bios_std_out_puts 0x800D65B4u
+#define func_800D65B4 bios_std_out_puts  /* alias */
+
+/* confirmed: BIOS call thunk -> A0(0x13) = setjmp */
+#define PSX_FN_bios_setjmp 0x800D65C4u
+#define func_800D65C4 bios_setjmp  /* alias */
+
+/* confirmed: BIOS call thunk -> A0(0x19) = strcpy */
+#define PSX_FN_bios_strcpy 0x800D65D4u
+#define func_800D65D4 bios_strcpy  /* alias */
+
+/* confirmed: BIOS call thunk -> A0(0x1b) = strlen */
+#define PSX_FN_bios_strlen 0x800D65E4u
+#define func_800D65E4 bios_strlen  /* alias */
+
+/* confirmed: BIOS call thunk -> A0(0x2a) = memcpy */
+#define PSX_FN_bios_memcpy 0x800D65F4u
+#define func_800D65F4 bios_memcpy  /* alias */
+
+/* confirmed: BIOS call thunk -> A0(0x2b) = memset */
+#define PSX_FN_bios_memset 0x800D6604u
+#define func_800D6604 bios_memset  /* alias */
+
+/* confirmed: BIOS call thunk -> A0(0x3f) = printf */
+#define PSX_FN_bios_printf 0x800D6614u
+#define func_800D6614 bios_printf  /* alias */
+
+/* confirmed: BIOS call thunk -> A0(0x39) = InitHeap */
+#define PSX_FN_bios_InitHeap 0x800D6624u
+#define func_800D6624 bios_InitHeap  /* alias */
+
+/* confirmed: BIOS call thunk -> A0(0x49) = GPU_cw */
+#define PSX_FN_bios_GPU_cw 0x800D6634u
+#define func_800D6634 bios_GPU_cw  /* alias */
+
+/* confirmed: BIOS call thunk -> A0(0x72) = CdRemove */
+#define PSX_FN_bios_CdRemove 0x800D6644u
+#define func_800D6644 bios_CdRemove  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x07) = DeliverEvent */
+#define PSX_FN_bios_DeliverEvent 0x800D6654u
+#define func_800D6654 bios_DeliverEvent  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x08) = OpenEvent */
+#define PSX_FN_bios_OpenEvent 0x800D6664u
+#define func_800D6664 bios_OpenEvent  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x09) = CloseEvent */
+#define PSX_FN_bios_CloseEvent 0x800D6674u
+#define func_800D6674 bios_CloseEvent  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x0a) = WaitEvent */
+#define PSX_FN_bios_WaitEvent 0x800D6684u
+#define func_800D6684 bios_WaitEvent  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x0b) = TestEvent */
+#define PSX_FN_bios_TestEvent 0x800D6694u
+#define func_800D6694 bios_TestEvent  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x0c) = EnableEvent */
+#define PSX_FN_bios_EnableEvent 0x800D66A4u
+#define func_800D66A4 bios_EnableEvent  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x0e) = OpenThread */
+#define PSX_FN_bios_OpenThread 0x800D66B4u
+#define func_800D66B4 bios_OpenThread  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x0f) = CloseThread */
+#define PSX_FN_bios_CloseThread 0x800D66C4u
+#define func_800D66C4 bios_CloseThread  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x10) = ChangeThread */
+#define PSX_FN_bios_ChangeThread 0x800D66D4u
+#define func_800D66D4 bios_ChangeThread  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x14) = StopPad */
+#define PSX_FN_bios_StopPad 0x800D66E4u
+#define func_800D66E4 bios_StopPad  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x15) = OutdatedPadInitAndStart */
+#define PSX_FN_bios_OutdatedPadInitAndStart 0x800D66F4u
+#define func_800D66F4 bios_OutdatedPadInitAndStart  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x16) = OutdatedPadGetButtons */
+#define PSX_FN_bios_OutdatedPadGetButtons 0x800D6704u
+#define func_800D6704 bios_OutdatedPadGetButtons  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x17) = ReturnFromException */
+#define PSX_FN_bios_ReturnFromException 0x800D6714u
+#define func_800D6714 bios_ReturnFromException  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x18) = SetDefaultExitFromException */
+#define PSX_FN_bios_SetDefaultExitFromException 0x800D6724u
+#define func_800D6724 bios_SetDefaultExitFromException  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x19) = SetCustomExitFromException */
+#define PSX_FN_bios_SetCustomExitFromException 0x800D6734u
+#define func_800D6734 bios_SetCustomExitFromException  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x32) = file_open */
+#define PSX_FN_bios_file_open 0x800D6764u
+#define func_800D6764 bios_file_open  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x34) = file_read */
+#define PSX_FN_bios_file_read 0x800D6774u
+#define func_800D6774 bios_file_read  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x35) = file_write */
+#define PSX_FN_bios_file_write 0x800D6784u
+#define func_800D6784 bios_file_write  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x36) = file_close */
+#define PSX_FN_bios_file_close 0x800D6794u
+#define func_800D6794 bios_file_close  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x41) = FormatDevice */
+#define PSX_FN_bios_FormatDevice 0x800D67A4u
+#define func_800D67A4 bios_FormatDevice  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x42) = firstfile */
+#define PSX_FN_bios_firstfile 0x800D67B4u
+#define func_800D67B4 bios_firstfile  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x43) = nextfile */
+#define PSX_FN_bios_nextfile 0x800D67C4u
+#define func_800D67C4 bios_nextfile  /* alias */
+
+/* confirmed: BIOS call thunk -> B0(0x5b) = ChangeClearPad */
+#define PSX_FN_bios_ChangeClearPad 0x800D67D4u
+#define func_800D67D4 bios_ChangeClearPad  /* alias */
+
+/* confirmed: BIOS call thunk -> C0(0x0a) = ChangeClearRCnt */
+#define PSX_FN_bios_ChangeClearRCnt 0x800D67E4u
+#define func_800D67E4 bios_ChangeClearRCnt  /* alias */
+
+/* confirmed: BIOS call thunk -> A0(0x44) = FlushCache */
+#define PSX_FN_bios_FlushCache 0x800D78ECu
+#define func_800D78EC bios_FlushCache  /* alias */
+
+/* confirmed: logs its own name in the literal "MDEC_rest:bad option(%d)\n" */
+#define PSX_FN_MDEC_rest 0x800D7B8Cu
+#define func_800D7B8C MDEC_rest  /* alias */
+
+/* guessed: VAB (SPU sound bank) transfer + size check; prints "VB Trans Error!!\n" */
+#define PSX_FN_VabTransfer 0x800FC51Cu
+#define func_800FC51C VabTransfer  /* alias */
+
+/* guessed: loads a stage's module set (zenhan/kouhan = first/second half, player, module); prints "KOUHAN LOAD %x\n" */
+#define PSX_FN_StageModuleLoad 0x801014E8u
+#define func_801014E8 StageModuleLoad  /* alias */
+
+/* guessed: builds/uses the memory-card filename BASLUS-00453 (BA + serial); prints "BASLUS-00453" */
+#define PSX_FN_MemcardSaveFile 0x8011F8E8u
+#define func_8011F8E8 MemcardSaveFile  /* alias */
+
+/* guessed: builds/uses the memory-card filename BASLUS-00453 (BA + serial); prints "BASLUS-00453" (shares its evidence with 0x8011F8E8; suffixed to stay unique) */
+#define PSX_FN_MemcardSaveFile_8011FDB8 0x8011FDB8u
+#define func_8011FDB8 MemcardSaveFile_8011FDB8  /* alias */
+
+/* guessed: game-over sequence loader; prints "OVER LOAD %x\n" */
+#define PSX_FN_GameOverLoad 0x80121B00u
+#define func_80121B00 GameOverLoad  /* alias */
+
+/* guessed: debug menu root (MAINMENU/FLAGCHANGE/WORKVIEW/VABVIEW); prints "MAINMENU\n\n" */
+#define PSX_FN_DebugMainMenu 0x80134FA0u
+#define func_80134FA0 DebugMainMenu  /* alias */
+
+/* guessed: debug SPU key-on / player-position view; prints "keyon:" */
+#define PSX_FN_DebugKeyOnView 0x801350F0u
+#define func_801350F0 DebugKeyOnView  /* alias */
+
+/* guessed: debug object-slot view (player FX / shells / enemies); prints "PLFX %2x\n" */
+#define PSX_FN_DebugObjectCounts 0x80135368u
+#define func_80135368 DebugObjectCounts  /* alias */
+
+/* guessed: debug object-slot view (player FX / shells / enemies); prints "PLFX %2x\n" (shares its evidence with 0x80135368; suffixed to stay unique) */
+#define PSX_FN_DebugObjectCounts_8013541C 0x8013541Cu
+#define func_8013541C DebugObjectCounts_8013541C  /* alias */
+
+/* guessed: debug sound-effect selector; prints "ILLEGAL SE NUM %x\n" */
+#define PSX_FN_DebugSeTest 0x80135738u
+#define func_80135738 DebugSeTest  /* alias */
+
+/* guessed: debug view of an actor's parts slots; prints "parts0:%s\n" */
+#define PSX_FN_DebugActorParts 0x80135D88u
+#define func_80135D88 DebugActorParts  /* alias */
+
+/* guessed: debug GPU primitive counter readout; prints "GPU:%3d\n" */
+#define PSX_FN_DebugGpuCount 0x80136394u
+#define func_80136394 DebugGpuCount  /* alias */
+
+/* guessed: debug object counter readout; prints "OBJ:%3d\n" */
+#define PSX_FN_DebugObjCount 0x801363ACu
+#define func_801363AC DebugObjCount  /* alias */
+
+/* guessed: debug view of an actor's behaviour flag + routine indices; prints "beflag:%4x\t" */
+#define PSX_FN_DebugActorRoutines 0x801364D8u
+#define func_801364D8 DebugActorRoutines  /* alias */
+
+/* guessed: debug view of an actor's set-table and X/Y position; prints "settbl:%8x\n" */
+#define PSX_FN_DebugActorPosition 0x8013658Cu
+#define func_8013658C DebugActorPosition  /* alias */
+
+/* guessed: debug view of an actor's speed/gravity fields; prints "speedx:%8x" */
+#define PSX_FN_DebugActorVelocity 0x801365D8u
+#define func_801365D8 DebugActorVelocity  /* alias */
+
+/* guessed: debug view of an actor's script/hit pointers; prints "scrptr:%8x" */
+#define PSX_FN_DebugActorPointers 0x80136728u
+#define func_80136728 DebugActorPointers  /* alias */
+
+/* guessed: debug view of an actor's damage fields (dmg_id/str/muteki=invincibility/life); prints "dmg_id:%4x\t" */
+#define PSX_FN_DebugActorDamage 0x801367C4u
+#define func_801367C4 DebugActorDamage  /* alias */
+
+/* guessed: debug sound-test screen; prints "SOUND TEST\n" */
+#define PSX_FN_DebugSoundTest 0x801368F4u
+#define func_801368F4 DebugSoundTest  /* alias */

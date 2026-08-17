@@ -1,0 +1,98 @@
+format_version = 5
+id = "mm8.developer.stage-select"
+version = "1.0.0"
+name = "Mega Man 8 Developer Tools"
+author = "mm8Recomp"
+description = "Testing tools: skip the intro FMVs, and start directly in a chosen stage instead of playing to it. Both are off by default and are meant for development, not normal play."
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "SLUS-00453"
+
+[[feature]]
+id = "stage-select"
+name = "Stage Select (Developer)"
+description = "Override the first stage the game loads. Intended for testing coverage across stages; leave disabled for normal play."
+group = "Developer"
+default_enabled = false
+
+[[feature]]
+id = "skip-intros"
+name = "Skip Intro Videos (Developer)"
+description = "Skip the Capcom logo and the opening FMV on boot, so a test run reaches the title screen in seconds instead of ~2 minutes. Presentation only: no game state is altered."
+group = "Developer"
+default_enabled = false
+
+[[option]]
+feature = "stage-select"
+id = "stage"
+label = "Start in stage"
+description = "Index into MM8's stage table (0x80137A5C). Stage 00 is the intro stage the game normally starts with."
+group = "Developer"
+type = "choice"
+default = "0"
+
+[[option.choice]]
+value = "0"
+label = "Stage 00 (OVL/STAGE00.BIN)"
+
+[[option.choice]]
+value = "1"
+label = "Stage 01 (OVL/STAGE01.BIN)"
+
+[[option.choice]]
+value = "2"
+label = "Stage 02 — Clown Man (OVL/STAGE02.BIN)"
+
+[[option.choice]]
+value = "3"
+label = "Stage 03 (OVL/STAGE03.BIN)"
+
+[[option.choice]]
+value = "4"
+label = "Stage 04 (OVL/STAGE04.BIN)"
+
+[[option.choice]]
+value = "5"
+label = "Stage 05 (OVL/STAGE05.BIN)"
+
+[[option.choice]]
+value = "6"
+label = "Stage 06 (OVL/STAGE06.BIN)"
+
+[[option.choice]]
+value = "7"
+label = "Stage 07 (OVL/STAGE07.BIN)"
+
+[[option.choice]]
+value = "8"
+label = "Stage 08 (OVL/STAGE08.BIN)"
+
+[[option.choice]]
+value = "9"
+label = "Stage 09 (OVL/STAGE09.BIN)"
+
+[[option.choice]]
+value = "10"
+label = "Stage 0A (OVL/STAGE0A.BIN)"
+
+[[option.choice]]
+value = "11"
+label = "Stage 0B (OVL/STAGE0B.BIN)"
+
+[[option.choice]]
+value = "12"
+label = "Stage 0C (OVL/STAGE0C.BIN)"
+
+[[option.choice]]
+value = "13"
+label = "Stage 0D (OVL/STAGE0D.BIN)"
+
+[[plugin]]
+feature = "stage-select"
+id = "mm8.stage-select"
+
+[[plugin]]
+feature = "skip-intros"
+id = "mm8.skip-intros"

@@ -1,0 +1,3606 @@
+diff --git a/THIRD_PARTY_ATTRIBUTION.md b/THIRD_PARTY_ATTRIBUTION.md
+index b57d5f9..ce26d2a 100644
+--- a/THIRD_PARTY_ATTRIBUTION.md
++++ b/THIRD_PARTY_ATTRIBUTION.md
+@@ -57,3 +57,22 @@ engine-agnostic pieces originally authored by Jrickey in
+ - The tap plumbing in `runtime/src/spu.c` and `runtime/include/spu.h`.
+ 
+ All reuse keeps the original copyright and dual MIT/Apache-2.0 license.
++
++## Video filters — algorithm provenance
++
++`runtime/src/video_filter.c` / `runtime/src/gpu_gl_filter_shaders.h`
++(see `docs/VIDEO_FILTERS.md`):
++
++- **Scale2x / Scale3x (EPX)** — algorithm by Eric Johnston (LucasArts) and
++  Andrea Mazzoleni (AdvanceMAME). Independent implementation; the AdvanceMAME
++  code (GPL) was not used.
++- **2xSaI / Super 2xSaI / Super Eagle** — algorithms by Derek Liauw Kie Fa
++  ("Kreed"). Independent implementation from the published rules; the original
++  code (GPL) was not used.
++- **xBR level 2** — Hyllian (2011). The per-output-pixel formulation follows
++  Hyllian's `xbr-lv2` shader from libretro `glsl-shaders`, **MIT** licence,
++  Copyright (c) 2011-2016 Hyllian.
++- **CRT look** — modelled on Timothy Lottes' CRT shader, released into the
++  **public domain** by its author.
++- **Sharp bilinear** — the public-domain "sharp-bilinear-simple" formula
++  (integer prescale + linear finish).
+diff --git a/docs/VIDEO_FILTERS.md b/docs/VIDEO_FILTERS.md
+new file mode 100644
+index 0000000..915f67f
+--- /dev/null
++++ b/docs/VIDEO_FILTERS.md
+@@ -0,0 +1,72 @@
++# Video filters (present-time upscalers and display looks)
++
++Opt-in presentation filters applied between the finished PSX frame and the
++window. **Presentation only**: they never touch VRAM, the GPU command stream,
++savestates, netplay digests or oracle/diff frames. `none` (default) is the
++historical present path, byte-identical to a build without the feature.
++
++| token | label | family | GL | software present |
++|---|---|---|---|---|
++| `none` | None | — | plain present | plain present |
++| `sharp` | Sharp | final pass | sharp-bilinear shader | 3x nearest prescale + linear |
++| `scale2x`, `scale3x` | Scale2x / Scale3x | upscaler (EPX) | shader, 2x/3x FBO | CPU |
++| `2xsai`, `super2xsai`, `supereagle` | 2xSaI / Super 2xSaI / Super Eagle | upscaler | shader, 2x FBO | CPU |
++| `xbr2x`, `xbr3x`, `xbr4x` | xBR 2x/3x/4x | upscaler (xBR lv2, corner rule C) | shader, N x FBO | CPU |
++| `scanlines` | Scanlines | final pass | sharp + scanline mask | prescale + darkened rows |
++| `crt` | CRT | final pass | Lottes-style beam/mask/gamma | prescale + darkened rows |
++
++Upscalers render an integer-factor image (pass A) that is then fitted to the
++window with sharp-bilinear (pass B, GL) or SDL's scale mode (software).
++Vulkan does not filter yet (its present is a `vkCmdBlitImage`; the backend is
++hidden/experimental).
++
++## Selecting
++
++* Launcher: Settings → Display → **Video filter** (cycles the runtime's
++  vocabulary; persisted to `settings.toml` as `[video] filter = "<token>"`).
++* In game: **ESC menu → VIDEO FILTER** (Left/Right/Enter cycle; applied live
++  and persisted to `settings.toml`).
++* `game.toml`: `[video] filter = "<token>"` (default for the title).
++* Env override (debug): `PSX_VIDEO_FILTER=<token>`.
++* Mods: `psx_mod_set_video_filter("<token>")` (`mod_plugins.h`).
++* Live: debug server `{"cmd":"video_filter","name":"xbr2x"}`.
++
++Precedence: game.toml → settings.toml → env → launcher → mod/debug.
++
++## Where it lives
++
++* `runtime/include/video_filter.h`, `runtime/src/video_filter.c` — kinds,
++  names, the **CPU reference** implementation (also the software present).
++* `runtime/src/gpu_gl_filter_shaders.h` — GLSL twins of the CPU reference;
++  `gpu_gl_renderer.c` `vf_present()` runs them from `present_target_quad`
++  (VRAM / wide / hold-native), the CPU-readout present (FMV) and the
++  interpolation thread's blend.
++* `runtime/tests/test_video_filter.c` — contract tests for the CPU side
++  (`video_filter_test`).
++
++## Parity contract and how to check it
++
++The GL shaders must reproduce the CPU reference to within 1 LSB when the
++window is an exact integer multiple of the source (pass B is then an identity).
++xBR is written so that all edge decisions are exact integer comparisons on both
++sides (integer luma 299R+587G+114B, dyadic blend weights snapped to 1/8) —
++tie-breaking on pixel art would otherwise flip between CPU and GPU.
++
++Debug-server support:
++
++* `present_capture {"path":P}` — next presented drawable → `P` (GL: post-filter,
++  pre-OSD) plus `P.src.png` (source rect the filter consumed), `P.up.png` (raw
++  pass-A output) and `P.ref.png` (CPU reference of the same input) for the
++  upscalers; software present: the exact post-filter buffer.
++* `window_size {"w":..,"h":..}` — pin an integer scale.
++* A game repo tool such as MegaMan8Recomp `tools/video_filter_check.py` drives
++  those three and diffs drawable vs reference for every upscaler.
++
++## Provenance
++
++Scale2x/EPX (E. Johnston / A. Mazzoleni), 2xSaI family (D. Liauw Kie Fa) are
++independent implementations from the published algorithms (the original code
++of both is GPL and was not used). xBR level 2 follows Hyllian's MIT-licensed
++xbr-lv2 shader; the CRT look is modelled on Timothy Lottes' public-domain CRT
++shader; sharp-bilinear is the public-domain prescale+linear formula.
++hqx (LGPL) and xBRZ (GPL) are deliberately not included.
+diff --git a/recompiler/src/config_loader.cpp b/recompiler/src/config_loader.cpp
+index cd38b9b..7e2e22a 100644
+--- a/recompiler/src/config_loader.cpp
++++ b/recompiler/src/config_loader.cpp
+@@ -581,6 +581,9 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
+                 "[video] crt_filter must be \"raw\"|\"crt\"|\"composite\"|\"trinitron\": {}",
+                 mode));
+         }
++        if (video.contains("filter")) {
++            rt.video_filter = toml::find<std::string>(video, "filter");
++        }
+         if (video.contains("auto_skip_fmv")) {
+             rt.video_auto_skip_fmv = toml::find<bool>(video, "auto_skip_fmv");
+         }
+@@ -2165,6 +2168,9 @@ UserSettings load_user_settings(const fs::path& path) {
+             else if (m == "composite") { s.screen_kind = 2; s.has_screen_kind = true; }
+             else if (m == "trinitron") { s.screen_kind = 3; s.has_screen_kind = true; }
+         });
++        if (v.contains("filter")) try_get([&]{
++            s.video_filter = toml::find<std::string>(v, "filter"); s.has_video_filter = true;
++        });
+         if (v.contains("auto_skip_fmv")) try_get([&]{
+             s.auto_skip_fmv = toml::find<bool>(v, "auto_skip_fmv"); s.has_auto_skip_fmv = true;
+         });
+@@ -2469,6 +2475,8 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
+                       : s.screen_kind == 3 ? "trinitron" : "raw";
+         f << "crt_filter        = \"" << k << "\"\n";
+     }
++    if (s.has_video_filter)
++        f << "filter            = \"" << s.video_filter << "\"\n";
+     if (s.has_auto_skip_fmv)
+         f << "auto_skip_fmv     = " << (s.auto_skip_fmv ? "true" : "false") << "\n";
+     /* turbo_loads is deliberately NOT written back: it is deprecated and no
+diff --git a/recompiler/src/config_loader.h b/recompiler/src/config_loader.h
+index 1829e02..8ff9cad 100644
+--- a/recompiler/src/config_loader.h
++++ b/recompiler/src/config_loader.h
+@@ -414,6 +414,14 @@ struct RuntimeConfig {
+     // PSX_SCREEN env var overrides this at runtime (debug path).
+     int                   video_screen_kind = 0;
+ 
++    // filter: present-time video filter (runtime/include/video_filter.h). A
++    // token such as "none" (default; the historical present, untouched),
++    // "sharp", "scale2x", "scale3x", "2xsai", "super2xsai", "supereagle",
++    // "xbr2x", "xbr3x", "xbr4x", "scanlines", "crt". Kept as the raw string —
++    // the runtime owns the vocabulary (video_filter_from_name) and rejects
++    // unknown tokens at startup. PSX_VIDEO_FILTER env overrides at runtime.
++    std::string           video_filter;
++
+     // auto_skip_fmv: when true, full-motion videos (streaming XA audio + MDEC
+     // video) are skipped the instant they're detected — presentation + pacing are
+     // suppressed and audio muted for the duration, so an FMV ends in a fraction of
+@@ -1063,6 +1071,7 @@ struct UserSettings {
+     bool has_geometry_correction   = false; bool geometry_correction   = false;
+     bool has_perspective_texturing = false; bool perspective_texturing = false;
+     bool has_screen_kind    = false; int  screen_kind    = 0; // 0..3 (ScreenKind)
++    bool has_video_filter   = false; std::string video_filter; // video_filter.h token
+     bool has_auto_skip_fmv  = false; bool auto_skip_fmv  = false; // skip FMVs
+     // [video] turbo_loads: DEPRECATED AND IGNORED — the legacy home of the
+     // generic Turbo loads switch, back when the launcher drew a row for it.
+diff --git a/runtime/CMakeLists.txt b/runtime/CMakeLists.txt
+index 4593498..fe089ce 100644
+--- a/runtime/CMakeLists.txt
++++ b/runtime/CMakeLists.txt
+@@ -214,25 +214,32 @@ if(BUILD_TESTING)
+     target_link_libraries(mod_runtime_test PRIVATE chdr-static)
+     add_test(NAME mod_runtime_test COMMAND mod_runtime_test)
+ 
+-    if(WIN32)
+-        add_executable(autocompile_publication_test
+-            tests/test_autocompile_publication.c
+-            src/autocompile.c)
+-        target_include_directories(autocompile_publication_test PRIVATE include)
+-        target_compile_definitions(autocompile_publication_test PRIVATE
+-            PSX_AUTOCOMPILE_TEST=1)
+-        add_test(NAME autocompile_publication_test
+-                 COMMAND autocompile_publication_test)
+-
+-        # A misconfigured overlay_autocompile_cmd must be reported on a channel
+-        # that exists: the stdout warnings reach nobody under -mwindows, so a
+-        # broken autocompile silently degrades the whole run to the interpreter.
+-        add_executable(autocompile_degraded_test
+-            tests/test_autocompile_degraded.c
+-            src/autocompile.c)
+-        target_include_directories(autocompile_degraded_test PRIVATE include)
+-        add_test(NAME autocompile_degraded_test
+-                 COMMAND autocompile_degraded_test)
++    # These were WIN32-only while autocompile.c was Windows-only. The spawner
++    # and its publication pipeline are portable now, so the tests that pin its
++    # contract run on every host.
++    add_executable(autocompile_publication_test
++        tests/test_autocompile_publication.c
++        src/autocompile.c)
++    target_include_directories(autocompile_publication_test PRIVATE include)
++    target_compile_definitions(autocompile_publication_test PRIVATE
++        PSX_AUTOCOMPILE_TEST=1)
++    add_test(NAME autocompile_publication_test
++             COMMAND autocompile_publication_test)
++
++    # A misconfigured overlay_autocompile_cmd must be reported on a channel
++    # that exists: the stdout warnings reach nobody under -mwindows, so a
++    # broken autocompile silently degrades the whole run to the interpreter.
++    add_executable(autocompile_degraded_test
++        tests/test_autocompile_degraded.c
++        src/autocompile.c)
++    target_include_directories(autocompile_degraded_test PRIVATE include)
++    add_test(NAME autocompile_degraded_test
++             COMMAND autocompile_degraded_test)
++
++    if(NOT WIN32)
++        find_package(Threads REQUIRED)
++        target_link_libraries(autocompile_publication_test PRIVATE Threads::Threads)
++        target_link_libraries(autocompile_degraded_test PRIVATE Threads::Threads)
+     endif()
+ 
+     # ---- previously-unregistered standalone tests -------------------------
+@@ -283,6 +290,16 @@ if(BUILD_TESTING)
+     target_include_directories(gpu_sw_edges_test PRIVATE src)
+     add_test(NAME gpu_sw_edges_test COMMAND gpu_sw_edges_test)
+ 
++    # Present-time video filters: the CPU reference the GL shaders are held to.
++    add_executable(video_filter_test
++        tests/test_video_filter.c
++        src/video_filter.c)
++    target_include_directories(video_filter_test PRIVATE include)
++    if(NOT WIN32)
++        target_link_libraries(video_filter_test PRIVATE m)
++    endif()
++    add_test(NAME video_filter_test COMMAND video_filter_test)
++
+     add_executable(gpu_vk_upload_alignment_test
+         tests/test_gpu_vk_upload_alignment.c)
+     target_include_directories(gpu_vk_upload_alignment_test PRIVATE src)
+diff --git a/runtime/include/gpu_gl_renderer.h b/runtime/include/gpu_gl_renderer.h
+index 30b2ab9..d3881f8 100644
+--- a/runtime/include/gpu_gl_renderer.h
++++ b/runtime/include/gpu_gl_renderer.h
+@@ -49,6 +49,22 @@ void gl_renderer_present(const uint32_t *pixels, int src_w, int src_h, int linea
+ /* Clear to black + swap (display-disabled frame). */
+ void gl_renderer_present_blank(void);
+ 
++/* Present-time video filter (video_filter.h) diagnostics: the kind last drawn
++ * through the filter path, a bitmask of kinds whose shaders failed this
++ * session (those fall back to the plain present), and pass/fallback counters. */
++void gl_renderer_video_filter_diag(int *last_kind, unsigned *broken_mask,
++                                   uint64_t *passes, uint64_t *fallbacks);
++
++/* One-shot capture of the next presented drawable (post-filter, pre-OSD) to a
++ * PNG at `path`. Returns 1 if queued. Poll gl_renderer_present_capture_result():
++ * 0 = still pending / nothing queued, 1 = written, -1 = failed. Used by the
++ * debug server's "present_capture" for filter parity checks. */
++int gl_renderer_request_present_capture(const char *path);
++int gl_renderer_present_capture_result(void);
++/* Whether a capture also writes the .src/.up/.ref parity companions
++ * (default on; bug-report bundles turn it off for a plain screen.png). */
++void gl_renderer_present_capture_companions(int on);
++
+ /* §33: re-present the last Live frame captured before Swap (or from a VRAM
+  * snapshot when interpolation owned the last present). Used during rollback
+  * resim so the window keeps a wall-clock present cadence without reading
+diff --git a/runtime/include/mod_plugins.h b/runtime/include/mod_plugins.h
+index 610f245..41c8ef1 100644
+--- a/runtime/include/mod_plugins.h
++++ b/runtime/include/mod_plugins.h
+@@ -95,6 +95,15 @@ int psx_mod_set_fixed_display_aspect(uint32_t numerator,
+  */
+ int psx_mod_set_adaptive_display_aspect(uint32_t max_numerator,
+                                         uint32_t max_denominator);
++/*
++ * Select a present-time video filter by its config token ("none", "sharp",
++ * "scale2x", "scale3x", "2xsai", "super2xsai", "supereagle", "xbr2x",
++ * "xbr3x", "xbr4x", "scanlines", "crt" — see runtime/include/video_filter.h).
++ * Presentation only (never touches VRAM, digests or oracle frames); applies
++ * immediately and overrides the launcher/settings value for the session.
++ * Returns 1 on success, 0 for an unknown token.
++ */
++int psx_mod_set_video_filter(const char* name);
+ /*
+  * Set the wall-clock cadence of simulated guest VBlanks. A value of zero
+  * removes frontend pacing; 60 and higher request that many native guest
+diff --git a/runtime/include/video_filter.h b/runtime/include/video_filter.h
+new file mode 100644
+index 0000000..bab32c6
+--- /dev/null
++++ b/runtime/include/video_filter.h
+@@ -0,0 +1,122 @@
++/* video_filter.h — present-time pixel-art upscalers and display filters.
++ *
++ * PRESENT-TIME ONLY. A video filter sits between the finished PSX frame (the
++ * scanout region of VRAM, already converted to RGB) and the window. It never
++ * touches VRAM, the GPU command stream, the CPU-visible mirror, savestates,
++ * netplay digests or the differential-verify path: every hashed / oracle-
++ * compared frame is defined on the raw scanout and stays byte-identical no
++ * matter which filter the player has selected. VF_NONE (the default) is a
++ * true passthrough — with the feature off, the present is exactly what it was
++ * before this module existed.
++ *
++ * Two families of filter exist:
++ *
++ *   UPSCALERS  — integer-factor "edge logic" scalers designed for hand-drawn
++ *                tile/sprite art: Scale2x/3x (EPX), the 2xSaI family (2xSaI,
++ *                Super 2xSaI, Super Eagle) and xBR level 2 at 2x/3x/4x. Each
++ *                produces an (N*w) x (N*h) image which is then fitted to the
++ *                window (sharp-bilinear on GL, the SDL scale mode on the
++ *                software present).
++ *   FINAL PASS — filters that render straight at window resolution: sharp
++ *                bilinear (pixel-perfect scaling at non-integer factors),
++ *                scanlines, and a CRT look (scanline beam + shadow mask +
++ *                gamma). On the software (SDL_Renderer) present these are
++ *                approximated on the CPU by an integer nearest prescale (plus
++ *                the scanline mask) followed by SDL's linear scaling.
++ *
++ * The CPU implementations in video_filter.c are the REFERENCE: the OpenGL
++ * fragment shaders in gpu_gl_renderer.c implement the same arithmetic per
++ * output pixel, so a window sized to an exact integer multiple of the source
++ * must reproduce the CPU result to within unorm rounding (see
++ * runtime/tests/test_video_filter.c and docs/VIDEO_FILTERS.md).
++ *
++ * ── Attribution ───────────────────────────────────────────────────────────
++ * The algorithms are published designs; every implementation here is written
++ * from the algorithm descriptions, not copied from a GPL source:
++ *   - Scale2x / Scale3x (EPX): Eric Johnston (LucasArts, 1992), popularised
++ *     by Andrea Mazzoleni's AdvanceMAME Scale2x.
++ *   - 2xSaI / Super 2xSaI / Super Eagle: Derek Liauw Kie Fa ("Kreed"), 1999.
++ *   - xBR level 2: Hyllian (2011). The per-output-pixel formulation follows
++ *     Hyllian's MIT-licensed xbr-lv2 fragment shader (libretro glsl-shaders).
++ *   - Sharp bilinear: the widely used "prescale + linear" pixel-art formula
++ *     (as in libretro's sharp-bilinear-simple, public domain).
++ *   - CRT look: modelled on Timothy Lottes' public-domain CRT shader (scanline
++ *     gaussian, horizontal beam blur, shadow mask, gamma-correct blend).
++ */
++
++#ifndef PSXRECOMP_VIDEO_FILTER_H
++#define PSXRECOMP_VIDEO_FILTER_H
++
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef enum {
++    VF_NONE = 0,       /* raw present (nearest / linear per antialiasing)   */
++    VF_SHARP,          /* sharp bilinear (pixel-perfect non-integer fit)   */
++    VF_SCALE2X,        /* EPX / AdvMAME2x                                   */
++    VF_SCALE3X,        /* AdvMAME3x                                         */
++    VF_SAI2X,          /* 2xSaI                                             */
++    VF_SUPER_SAI2X,    /* Super 2xSaI                                       */
++    VF_SUPER_EAGLE,    /* Super Eagle                                       */
++    VF_XBR2X,          /* xBR level 2, 2x                                   */
++    VF_XBR3X,          /* xBR level 2, 3x                                   */
++    VF_XBR4X,          /* xBR level 2, 4x                                   */
++    VF_SCANLINES,      /* sharp + scanline mask                             */
++    VF_CRT,            /* CRT look: scanline beam, shadow mask, gamma       */
++    VF_COUNT
++} VideoFilterKind;
++
++/* Config token ("none", "sharp", "scale2x", ..., "crt") and a human label. */
++const char* video_filter_name(int kind);
++const char* video_filter_label(int kind);
++/* Parse a config/env token (case-insensitive; accepts a few aliases such as
++ * "2xsai"/"sai", "super2xsai", "supereagle", "xbr"=xbr2x, "off"/"raw"=none).
++ * Returns 1 and writes *out on success, 0 if unrecognised. */
++int  video_filter_from_name(const char* name, int* out);
++
++/* Integer factor of the upscaler pass: 2/3/4 for the upscalers, 1 for VF_NONE
++ * and the final-pass filters (sharp/scanlines/crt). */
++int  video_filter_scale(int kind);
++int  video_filter_is_upscaler(int kind);
++
++/* Runtime-wide selection (present-time only). Default VF_NONE. Values outside
++ * [0, VF_COUNT) clamp to VF_NONE. Safe to call from the main thread at any
++ * time; the presenters pick the new value up on their next frame. */
++void video_filter_set(int kind);
++int  video_filter_get(void);
++
++/* Factor the CPU path produces for `kind`: video_filter_scale() for the
++ * upscalers, VF_SW_PRESCALE (nearest prescale + optional scanline mask) for the
++ * final-pass filters, 1 for VF_NONE. */
++#define VF_SW_PRESCALE 3
++int  video_filter_cpu_scale(int kind);
++
++/* CPU reference / software-present implementation.
++ *   src : ARGB8888 (0xAARRGGBB) source, `w` x `h`, `src_pitch` in PIXELS.
++ *   dst : receives (w*N) x (h*N), N = video_filter_cpu_scale(kind),
++ *         `dst_pitch` in pixels. Alpha is forced to 0xFF.
++ * Border pixels are clamped (the neighbourhood never reads outside the
++ * source). Returns N, or 0 if kind is VF_NONE / arguments invalid (dst
++ * untouched). */
++int  video_filter_apply_cpu(int kind, const uint32_t* src, int src_pitch,
++                            int w, int h, uint32_t* dst, int dst_pitch);
++
++/* xBR tuning shared by the CPU reference and the GL shaders. Lumas are the
++ * INTEGER 299*R + 587*G + 114*B of 8-bit channels (0..255000): every luma,
++ * difference and weighted sum is then an exact small integer in float on both
++ * the CPU and the GPU, so the edge decisions (which are comparisons and are
++ * full of exact ties on pixel art) cannot flip between the two through
++ * rounding-order differences. Hyllian's canonical thresholds are on the
++ * 48-weight/0..1 scale — EQ 15 out of 48 — which maps to 15/48*255*1000. */
++#define VF_XBR_EQ_THRESHOLD   79687.5f     /* 15/48 * 255000 */
++#define VF_XBR_LV2_COEFF       2.0f
++#define VF_XBR_EPS             0.5f        /* strict-< guard on integer sums */
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* PSXRECOMP_VIDEO_FILTER_H */
+diff --git a/runtime/runtime.cmake b/runtime/runtime.cmake
+index 8a49dda..ba93021 100644
+--- a/runtime/runtime.cmake
++++ b/runtime/runtime.cmake
+@@ -311,6 +311,9 @@ set(PSXRECOMP_RUNTIME_SOURCES
+     ${PSXRECOMP_ROOT}/runtime/src/audio_shadow.c
+     ${PSXRECOMP_ROOT}/runtime/src/audio_trace.c
+     ${PSXRECOMP_ROOT}/runtime/src/color_lut.c
++    ${PSXRECOMP_ROOT}/runtime/src/video_filter.c
++    ${PSXRECOMP_ROOT}/runtime/src/bug_report.c
++    ${PSXRECOMP_ROOT}/runtime/src/psx_script.c
+     ${PSXRECOMP_ROOT}/runtime/src/iso_reader.cpp
+     ${PSXRECOMP_ROOT}/runtime/src/iso_reader_c.cpp
+     ${PSXRECOMP_ROOT}/runtime/src/psx_cycles.c
+diff --git a/runtime/src/debug_server.c b/runtime/src/debug_server.c
+index 61cd246..ac1b473 100644
+--- a/runtime/src/debug_server.c
++++ b/runtime/src/debug_server.c
+@@ -43,6 +43,7 @@
+ #include "card_data_writes.h"
+ #include "crash_trace.h"
+ #include "gpu_gl_renderer.h"
++#include "video_filter.h"
+ #include "lockstep.h"
+ 
+ #include <stdio.h>
+@@ -5227,6 +5228,7 @@ static void handle_gpu_state(int id, const char *json)
+              "\"display_x\":%d,\"display_y\":%d,"
+              "\"width\":%d,\"height\":%d,"
+              "\"depth\":%d,\"depth24\":%d,"
++             "\"d24_rgb_limit\":%u,"
+              "\"disabled\":%d,"
+              "\"h_display\":[%u,%u],\"v_display\":[%u,%u],"
+              "\"hres1\":%u,\"hres2\":%u,"
+@@ -5254,6 +5256,7 @@ static void handle_gpu_state(int id, const char *json)
+              id, di.display_x, di.display_y,
+              di.width, di.height,
+              di.depth24 ? 24 : 15, di.depth24,
++             (unsigned)gpu_depth24_rgb_limit(di.display_x, di.width),
+              di.disabled,
+              hx1, hx2, hy1, hy2, hr1, hr2,
+              gpustat,
+@@ -7942,6 +7945,55 @@ static void handle_mmx6_freshfix(int id, const char *json)
+  * {"cmd":"savestate","op":"save"|
+  * "load","slot":N}. The request is staged and runs at the next block boundary
+  * (savestate_poll); a load unwinds the guest, so the ack is sent before it. */
++/* overlay_resync: run one step of the post-bulk-RAM-write resync bundle.
++ *
++ * A savestate restore replaces RAM wholesale and then calls
++ * overlay_watch_invalidate_after_ram_restore(), which does five distinct
++ * things. A game that streams a new overlay over an old one performs the same
++ * shape of bulk replacement through the normal store path, and if any of those
++ * five is load-bearing there too, the symptom is native code validated against
++ * bytes that are no longer present. This command runs the steps individually so
++ * a live repro can be attributed to exactly one of them instead of the bundle.
++ *
++ * {"cmd":"overlay_resync","what":"gen"|"notecode"|"textguard"|"bless"|
++ *                                "validation"|"all"}
++ */
++/* system_menu: drive the ESC system-menu overlay without a keyboard.
++ * Wayland blocks synthetic key injection, so this is the only way to verify the
++ * panel renders. It drives the OVERLAY only — the real key handling lives in
++ * main.cpp and still needs a human pressing ESC.
++ * {"cmd":"system_menu","open":0|1,"sel":0..2} */
++static void handle_system_menu(int id, const char *json)
++{
++    extern void psx_system_menu_set_state(int open, int selected);
++    extern int  psx_system_menu_item_count(void);
++    extern int psx_system_menu_debug_rows(char *out, int cap);
++    int open = json_get_int(json, "open", 1);
++    int sel  = json_get_int(json, "sel", 0);
++    char rows[768];
++    int n = psx_system_menu_debug_rows(rows, (int)sizeof rows);
++    psx_system_menu_set_state(open, sel);
++    send_fmt("{\"id\":%d,\"ok\":true,\"open\":%d,\"sel\":%d,\"items\":%d,"
++             "\"rows\":\"%s\"}", id, open ? 1 : 0, sel, n, rows);
++}
++
++static void handle_overlay_resync(int id, const char *json)
++{
++    char what[24];
++    if (!json_get_str(json, "what", what, sizeof(what))) {
++        send_err(id, "missing what (gen|notecode|textguard|bless|validation|all)");
++        return;
++    }
++    if (!strcmp(what, "gen"))             overlay_watch_bump_all_page_gen();
++    else if (!strcmp(what, "notecode"))   overlay_loader_note_code_write();
++    else if (!strcmp(what, "textguard"))  dirty_ram_text_guard_resync_after_restore();
++    else if (!strcmp(what, "bless"))      psx_kernel_bless_resync_after_restore();
++    else if (!strcmp(what, "validation")) overlay_loader_resync_validation_after_restore();
++    else if (!strcmp(what, "all"))        overlay_watch_invalidate_after_ram_restore();
++    else { send_err(id, "what must be gen|notecode|textguard|bless|validation|all"); return; }
++    send_fmt("{\"id\":%d,\"ok\":true,\"what\":\"%s\"}", id, what);
++}
++
+ static void handle_savestate(int id, const char *json)
+ {
+     extern int savestate_request_save(int slot);
+@@ -7950,13 +8002,40 @@ static void handle_savestate(int id, const char *json)
+     extern int psx_netplay_is_host(void);
+     extern int psx_netplay_request_save(int slot);
+     extern int psx_netplay_request_load(int slot);
+-    int slot = json_get_int(json, "slot", -1);
+-    if (slot < 0) { send_err(id, "missing slot"); return; }
+     char op[16];
+     if (!json_get_str(json, "op", op, sizeof(op))) { send_err(id, "missing op"); return; }
++    /* Path-based variants (bug-report bundles): save_path writes a slot-less
++     * .pst; load_path stages any .pst file as an in-memory blob load. */
++    if (!strcmp(op, "save_path") || !strcmp(op, "load_path")) {
++        extern int savestate_request_save_path(const char *path);
++        extern int savestate_request_load_blob_protocol(const void *data, size_t size);
++        char path[512];
++        if (!json_get_str(json, "path", path, sizeof(path))) { send_err(id, "missing path"); return; }
++        if (psx_netplay_active()) { send_err(id, "refused during netplay"); return; }
++        int staged_p = 0;
++        if (!strcmp(op, "save_path")) {
++            staged_p = savestate_request_save_path(path);
++        } else {
++            FILE *f = fopen(path, "rb");
++            if (!f) { send_err(id, "cannot open path"); return; }
++            fseek(f, 0, SEEK_END);
++            long n = ftell(f);
++            fseek(f, 0, SEEK_SET);
++            uint8_t *blob = (n > 0) ? (uint8_t *)malloc((size_t)n) : NULL;
++            if (blob && fread(blob, 1, (size_t)n, f) == (size_t)n)
++                staged_p = savestate_request_load_blob_protocol(blob, (size_t)n);
++            free(blob);
++            fclose(f);
++        }
++        if (!staged_p) { send_err(id, "savestate path request refused"); return; }
++        send_fmt("{\"id\":%d,\"ok\":true,\"op\":\"%s\",\"path\":\"%s\"}", id, op, path);
++        return;
++    }
++    int slot = json_get_int(json, "slot", -1);
++    if (slot < 0) { send_err(id, "missing slot"); return; }
+     int staged;
+     if (strcmp(op, "save") && strcmp(op, "load")) {
+-        send_err(id, "op must be save|load");
++        send_err(id, "op must be save|load|save_path|load_path");
+         return;
+     }
+     if (psx_netplay_active()) {
+@@ -8757,6 +8836,96 @@ static void handle_wide_shot(int id, const char *json)
+  * this command unconditionally through handle_screenshot_file silently omits
+  * precisely the reveal margins that widescreen diagnostics need to inspect.
+  * Keep screenshot_file as the explicit canonical-VRAM probe. */
++/* bug_report: write a diagnostics bundle (bug_report.h) exactly as the F9
++ * hotkey does. {"cmd":"bug_report"} or {"cmd":"bug_report","trigger":"x"}. */
++static void handle_bug_report(int id, const char *json)
++{
++    extern int bug_report_capture(const char *trigger);
++    extern const char *bug_report_last_dir(void);
++    char trig[32];
++    if (!json_get_str(json, "trigger", trig, sizeof(trig))) strcpy(trig, "debug");
++    if (!bug_report_capture(trig)) { send_err(id, "bug_report: could not create the bundle folder"); return; }
++    send_fmt("{\"id\":%d,\"ok\":true,\"dir\":\"%s\"}", id, bug_report_last_dir());
++}
++
++/* video_filter: query or switch the present-time video filter (video_filter.h).
++ *   {"cmd":"video_filter"}                 -> current kind + vocabulary + GL diag
++ *   {"cmd":"video_filter","name":"xbr2x"}  -> select (presentation only) then report
++ * Selecting invalidates the GL present latch so the change lands next vblank
++ * even if VRAM is static. Unknown names are an error, nothing changes. */
++static void handle_video_filter(int id, const char *json)
++{
++    char name[64];
++    if (json_get_str(json, "name", name, sizeof(name))) {
++        int kind = 0;
++        if (!video_filter_from_name(name, &kind)) {
++            send_err(id, "unknown video filter name");
++            return;
++        }
++        video_filter_set(kind);
++        gl_renderer_invalidate_present();
++    }
++    int last_kind = 0; unsigned broken = 0; uint64_t passes = 0, fallbacks = 0;
++    gl_renderer_video_filter_diag(&last_kind, &broken, &passes, &fallbacks);
++    char vocab[512]; int n = 0;
++    vocab[0] = 0;
++    for (int k = 0; k < VF_COUNT; k++)
++        n += snprintf(vocab + n, sizeof(vocab) - (size_t)n, "%s\"%s\"", k ? "," : "",
++                      video_filter_name(k));
++    const int cur = video_filter_get();
++    send_fmt("{\"id\":%d,\"ok\":true,\"filter\":\"%s\",\"kind\":%d,\"scale\":%d,"
++             "\"cpu_scale\":%d,\"names\":[%s],"
++             "\"gl\":{\"last_kind\":%d,\"broken_mask\":%u,\"passes\":%llu,\"fallbacks\":%llu}}",
++             id, video_filter_name(cur), cur, video_filter_scale(cur),
++             video_filter_cpu_scale(cur), vocab, last_kind, broken,
++             (unsigned long long)passes, (unsigned long long)fallbacks);
++}
++
++/* window_size: {"cmd":"window_size","w":640,"h":480} resizes the game window
++ * (logical size; the drawable may differ under HiDPI) — used to pin an exact
++ * integer present scale for filter parity checks. Without w/h just reports.
++ * Always answers with the current window and drawable (pixel) sizes. */
++static void handle_window_size(int id, const char *json)
++{
++    extern SDL_Window* sdl_window;
++    if (!sdl_window) { send_err(id, "no window"); return; }
++    int w = json_get_int(json, "w", 0), h = json_get_int(json, "h", 0);
++    if (w > 0 && h > 0) SDL_SetWindowSize(sdl_window, w, h);
++    int ww = 0, wh = 0, dw = 0, dh = 0;
++    SDL_GetWindowSize(sdl_window, &ww, &wh);
++    SDL_GL_GetDrawableSize(sdl_window, &dw, &dh);
++    send_fmt("{\"id\":%d,\"ok\":true,\"window\":[%d,%d],\"drawable\":[%d,%d]}",
++             id, ww, wh, dw, dh);
++}
++
++/* present_capture: write the NEXT presented frame to a PNG.
++ * {"cmd":"present_capture","path":"x.png"} queues it (returns queued:true);
++ * {"cmd":"present_capture"} without a path reports the last request's state:
++ * pending / written / failed. OpenGL: the drawable after the video filter and
++ * before the OSD, plus `<path>.src.png` (the exact source rect the filter
++ * consumed), `<path>.up.png` (raw upscaler output) and `<path>.ref.png` (CPU
++ * reference of that input) for the upscalers. Software present: the exact
++ * post-filter buffer handed to SDL (which IS the CPU reference). */
++static void handle_present_capture(int id, const char *json)
++{
++    extern int psx_present_request_capture(const char* path);
++    extern int psx_present_capture_result(void);
++    char path[512];
++    if (json_get_str(json, "path", path, sizeof(path))) {
++        extern void gl_renderer_present_capture_companions(int on);
++        gl_renderer_present_capture_companions(json_get_int(json, "companions", 1));
++        if (!psx_present_request_capture(path)) {
++            send_err(id, "present_capture: bad path");
++            return;
++        }
++        send_fmt("{\"id\":%d,\"ok\":true,\"queued\":true,\"path\":\"%s\"}", id, path);
++        return;
++    }
++    const int r = psx_present_capture_result();
++    send_fmt("{\"id\":%d,\"ok\":true,\"state\":\"%s\"}", id,
++             r > 0 ? "written" : (r < 0 ? "failed" : "pending"));
++}
++
+ static void handle_present_screenshot(int id, const char *json)
+ {
+     extern int gr_wide_supported(void);
+@@ -13336,6 +13505,8 @@ static const CmdEntry s_commands[] = {
+     { "input_route_stop",  handle_input_route_stop },
+     { "input_route_status",handle_input_route_status },
+     { "savestate",         handle_savestate },
++    { "overlay_resync",       handle_overlay_resync },
++    { "system_menu",          handle_system_menu },
+     { "turbo",             handle_turbo },
+     { "turbo_state",       handle_turbo_state },
+     { "pause",             handle_pause },
+@@ -13354,6 +13525,10 @@ static const CmdEntry s_commands[] = {
+     { "set_snapshot",      handle_set_snapshot },
+     { "get_snapshots",     handle_get_snapshots },
+     { "screenshot",        handle_present_screenshot },
++    { "video_filter",      handle_video_filter },
++    { "bug_report",        handle_bug_report },
++    { "present_capture",   handle_present_capture },
++    { "window_size",       handle_window_size },
+     { "screenshot_file",   handle_screenshot_file },
+     { "screenshot_hires",  handle_screenshot_hires },
+     { "display_ring_get",  handle_display_ring_get },
+@@ -14024,6 +14199,35 @@ void debug_server_poll(void)
+     SDL_UnlockMutex(s_io_mutex);
+ }
+ 
++/* Run one command line in-process on the emu thread and hand back its
++ * response text (malloc'd, newline-terminated JSON lines; caller frees).
++ * Independent of the TCP listener, so bundle writers (bug_report.c) can reuse
++ * every handler in release builds too. Returns NULL if re-entered or if the
++ * server state was never initialised. */
++char *debug_server_run_local(const char *line)
++{
++    if (!line || !line[0]) return NULL;
++    /* Nested use (a handler such as bug_report calling other handlers): park
++     * the outer response buffer, run with a fresh one, then restore. */
++    char  *saved_buf = s_resp_buf; size_t saved_len = s_resp_len, saved_cap = s_resp_cap;
++    int    saved_in = s_in_command, saved_ovf = s_resp_overflow;
++    s_resp_buf = NULL; s_resp_len = 0; s_resp_cap = 0; s_resp_overflow = 0;
++    s_in_command = 1;
++    process_command(line);
++    char *out;
++    if (!s_resp_buf || s_resp_len == 0) {
++        out = (char *)malloc(1);
++        if (out) out[0] = 0;
++    } else {
++        out = (char *)malloc(s_resp_len + 1);
++        if (out) memcpy(out, s_resp_buf, s_resp_len + 1);
++    }
++    free(s_resp_buf);
++    s_resp_buf = saved_buf; s_resp_len = saved_len; s_resp_cap = saved_cap;
++    s_in_command = saved_in; s_resp_overflow = saved_ovf;
++    return out;
++}
++
+ void debug_server_record_frame(void)
+ {
+     if (s_fmv_quiet) {
+diff --git a/runtime/src/gpu_gl_filter_shaders.h b/runtime/src/gpu_gl_filter_shaders.h
+new file mode 100644
+index 0000000..429ae41
+--- /dev/null
++++ b/runtime/src/gpu_gl_filter_shaders.h
+@@ -0,0 +1,396 @@
++/* gpu_gl_filter_shaders.h — GLSL sources for the present-time video filters
++ * (OpenGL backend). Included only by gpu_gl_renderer.c.
++ *
++ * Contract: every upscaler shader here is the per-output-pixel form of the CPU
++ * reference in runtime/src/video_filter.c — same neighbourhood, same rules,
++ * same clamped edge handling, same rounding intent — so a window that is an
++ * exact integer multiple of the source reproduces the CPU output to within
++ * unorm rounding. Keep the two in lock-step; test_video_filter.c pins the CPU
++ * side and docs/VIDEO_FILTERS.md describes the in-game parity capture.
++ *
++ * Coordinate conventions:
++ *   - Upscaler passes render a full-viewport triangle into an FBO of exactly
++ *     (w*N) x (h*N) texels; gl_FragCoord identifies the output pixel, so no
++ *     UVs are needed. Source texel = u_rect.xy + out / N, sub = out mod N.
++ *     Texel row 0 is the TOP of the picture for every source we filter (VRAM
++ *     texture, wide surface, CPU upload, interp history), so "up" is y-1
++ *     exactly as in the CPU reference.
++ *   - All neighbourhood fetches clamp to the source rectangle u_rect: nothing
++ *     outside the displayed region ever leaks in (matches CPU clamping).
++ *   - The final pass draws with PRESENT_VS (v_uv over the letterbox quad,
++ *     already flipped by the caller's u_uv_rect) and samples the bound
++ *     texture inside u_rect only.
++ *
++ * Provenance: see video_filter.h. The xBR pass follows Hyllian's MIT-licensed
++ * xbr-lv2 shader structure; the CRT pass is modelled on Timothy Lottes'
++ * public-domain CRT shader (scanline gaussian, beam blur, aperture mask,
++ * gamma-correct blend); the sharp-bilinear formula is the public-domain
++ * "prescale + linear" pixel-art scaler. */
++
++#ifndef PSXRECOMP_GPU_GL_FILTER_SHADERS_H
++#define PSXRECOMP_GPU_GL_FILTER_SHADERS_H
++
++/* Vertex shader for the upscaler passes: full-viewport triangle, no varyings. */
++static const char *VF_UP_VS =
++    "#version 330\n"
++    "void main(){ vec2 p = vec2((gl_VertexID<<1)&2, gl_VertexID&2);\n"
++    "  gl_Position = vec4(p*2.0-1.0,0.0,1.0); }\n";
++
++/* Shared prologue of every upscaler fragment shader. */
++#define VF_UP_PROLOGUE \
++    "#version 330\n" \
++    "uniform sampler2D u_tex;\n" \
++    "uniform ivec4 u_rect;   /* x0,y0,w,h in texels */\n" \
++    "uniform int   u_scale;  /* N */\n" \
++    "out vec4 frag;\n" \
++    "ivec2 g_src;\n" \
++    "vec3 P(int dx, int dy){\n" \
++    "  ivec2 p = clamp(g_src + ivec2(dx,dy), u_rect.xy, u_rect.xy + u_rect.zw - 1);\n" \
++    "  return texelFetch(u_tex, p, 0).rgb; }\n" \
++    "bool eq(vec3 a, vec3 b){ return all(equal(a,b)); }\n" \
++    "vec3 avg2(vec3 a, vec3 b){ return (a+b)*0.5; }\n" \
++    "vec3 avg4(vec3 a, vec3 b, vec3 c, vec3 d){ return (a+b+c+d)*0.25; }\n"
++
++/* Opens main(): output pixel -> source cell + sub-position. */
++#define VF_UP_MAIN \
++    "void main(){\n" \
++    "  ivec2 o = ivec2(gl_FragCoord.xy);\n" \
++    "  ivec2 cell = o / u_scale;\n" \
++    "  ivec2 sub = o - cell * u_scale;\n" \
++    "  g_src = u_rect.xy + cell;\n"
++
++/* ---- Scale2x (EPX) ------------------------------------------------------- */
++static const char *VF_SCALE2X_FS =
++    VF_UP_PROLOGUE
++    VF_UP_MAIN
++    "  vec3 B=P(0,-1), D=P(-1,0), E=P(0,0), F=P(1,0), H=P(0,1);\n"
++    "  vec3 r = E;\n"
++    "  if (!eq(B,H) && !eq(D,F)) {\n"
++    "    if (sub == ivec2(0,0) && eq(D,B)) r = D;\n"
++    "    if (sub == ivec2(1,0) && eq(B,F)) r = F;\n"
++    "    if (sub == ivec2(0,1) && eq(D,H)) r = D;\n"
++    "    if (sub == ivec2(1,1) && eq(H,F)) r = F;\n"
++    "  }\n"
++    "  frag = vec4(r, 1.0);\n"
++    "}\n";
++
++/* ---- Scale3x --------------------------------------------------------------- */
++static const char *VF_SCALE3X_FS =
++    VF_UP_PROLOGUE
++    VF_UP_MAIN
++    "  vec3 A=P(-1,-1), B=P(0,-1), C=P(1,-1), D=P(-1,0), E=P(0,0), F=P(1,0),\n"
++    "       G=P(-1,1), H=P(0,1), I=P(1,1);\n"
++    "  vec3 r = E;\n"
++    "  if (!eq(B,H) && !eq(D,F)) {\n"
++    "    int k = sub.y*3 + sub.x;\n"
++    "    if (k==0 && eq(D,B)) r = D;\n"
++    "    if (k==1 && ((eq(D,B) && !eq(E,C)) || (eq(B,F) && !eq(E,A)))) r = B;\n"
++    "    if (k==2 && eq(B,F)) r = F;\n"
++    "    if (k==3 && ((eq(D,B) && !eq(E,G)) || (eq(D,H) && !eq(E,A)))) r = D;\n"
++    "    if (k==5 && ((eq(B,F) && !eq(E,I)) || (eq(H,F) && !eq(E,C)))) r = F;\n"
++    "    if (k==6 && eq(D,H)) r = D;\n"
++    "    if (k==7 && ((eq(D,H) && !eq(E,I)) || (eq(H,F) && !eq(E,G)))) r = H;\n"
++    "    if (k==8 && eq(H,F)) r = F;\n"
++    "  }\n"
++    "  frag = vec4(r, 1.0);\n"
++    "}\n";
++
++/* Kreed's vote helper (GetResult); GetResult2 is its negation. */
++#define VF_GET_RESULT \
++    "int getr(vec3 A, vec3 B, vec3 C, vec3 D){ int x=0,y=0,r=0;\n" \
++    "  if (eq(A,C)) x++; else if (eq(B,C)) y++;\n" \
++    "  if (eq(A,D)) x++; else if (eq(B,D)) y++;\n" \
++    "  if (x<=1) r++; if (y<=1) r--; return r; }\n"
++
++/* ---- 2xSaI ------------------------------------------------------------------ */
++static const char *VF_SAI2X_FS =
++    VF_UP_PROLOGUE
++    VF_GET_RESULT
++    VF_UP_MAIN
++    "  /*  I E F J / G A B K / H C D L / M N O .  — A = current */\n"
++    "  vec3 I=P(-1,-1), E=P(0,-1), F=P(1,-1), J=P(2,-1);\n"
++    "  vec3 G=P(-1,0),  A=P(0,0),  B=P(1,0),  K=P(2,0);\n"
++    "  vec3 H=P(-1,1),  C=P(0,1),  D=P(1,1),  L=P(2,1);\n"
++    "  vec3 M=P(-1,2),  N=P(0,2),  O=P(1,2);\n"
++    "  vec3 p0, p1, p2;\n"
++    "  if (eq(A,D) && !eq(B,C)) {\n"
++    "    p0 = ((eq(A,E) && eq(B,L)) || (eq(A,C) && eq(A,F) && !eq(B,E) && eq(B,J))) ? A : avg2(A,B);\n"
++    "    p1 = ((eq(A,G) && eq(C,O)) || (eq(A,B) && eq(A,H) && !eq(G,C) && eq(C,M))) ? A : avg2(A,C);\n"
++    "    p2 = A;\n"
++    "  } else if (eq(B,C) && !eq(A,D)) {\n"
++    "    p0 = ((eq(B,F) && eq(A,H)) || (eq(B,E) && eq(B,D) && !eq(A,F) && eq(A,I))) ? B : avg2(A,B);\n"
++    "    p1 = ((eq(C,H) && eq(A,F)) || (eq(C,G) && eq(C,D) && !eq(A,H) && eq(A,I))) ? C : avg2(A,C);\n"
++    "    p2 = B;\n"
++    "  } else if (eq(A,D) && eq(B,C)) {\n"
++    "    if (eq(A,B)) { p0 = A; p1 = A; p2 = A; }\n"
++    "    else {\n"
++    "      int r = 0;\n"
++    "      p1 = avg2(A,C); p0 = avg2(A,B);\n"
++    "      r += getr(A,B,G,E); r -= getr(B,A,K,F); r -= getr(B,A,H,N); r += getr(A,B,L,O);\n"
++    "      p2 = (r > 0) ? A : ((r < 0) ? B : avg4(A,B,C,D));\n"
++    "    }\n"
++    "  } else {\n"
++    "    p2 = avg4(A,B,C,D);\n"
++    "    if (eq(A,C) && eq(A,F) && !eq(B,E) && eq(B,J)) p0 = A;\n"
++    "    else if (eq(B,E) && eq(B,D) && !eq(A,F) && eq(A,I)) p0 = B;\n"
++    "    else p0 = avg2(A,B);\n"
++    "    if (eq(A,B) && eq(A,H) && !eq(G,C) && eq(C,M)) p1 = A;\n"
++    "    else if (eq(C,G) && eq(C,D) && !eq(A,H) && eq(A,I)) p1 = C;\n"
++    "    else p1 = avg2(A,C);\n"
++    "  }\n"
++    "  vec3 r = (sub.y == 0) ? ((sub.x == 0) ? A : p0) : ((sub.x == 0) ? p1 : p2);\n"
++    "  frag = vec4(r, 1.0);\n"
++    "}\n";
++
++/* Shared 4x4 neighbourhood of Super 2xSaI / Super Eagle:
++ *   B0 B1 B2 B3 / c4 c5 c6 S2 / c1 c2 c3 S1 / A0 A1 A2 A3   (c5 = current) */
++#define VF_SAI_NBR \
++    "  vec3 B0=P(-1,-1), B1=P(0,-1), B2=P(1,-1), B3=P(2,-1);\n" \
++    "  vec3 c4=P(-1,0),  c5=P(0,0),  c6=P(1,0),  S2=P(2,0);\n" \
++    "  vec3 c1=P(-1,1),  c2=P(0,1),  c3=P(1,1),  S1=P(2,1);\n" \
++    "  vec3 A0=P(-1,2),  A1=P(0,2),  A2=P(1,2),  A3=P(2,2);\n" \
++    "  vec3 p1a, p1b, p2a, p2b;\n"
++
++/* ---- Super 2xSaI ------------------------------------------------------------ */
++static const char *VF_SUPER_SAI2X_FS =
++    VF_UP_PROLOGUE
++    VF_GET_RESULT
++    VF_UP_MAIN
++    VF_SAI_NBR
++    "  if (eq(c2,c6) && !eq(c5,c3)) { p2b = c2; p1b = c2; }\n"
++    "  else if (eq(c5,c3) && !eq(c2,c6)) { p2b = c5; p1b = c5; }\n"
++    "  else if (eq(c5,c3) && eq(c2,c6)) {\n"
++    "    int r = 0;\n"
++    "    r += getr(c6,c5,c1,A1); r += getr(c6,c5,c4,B1); r += getr(c6,c5,A2,S1); r += getr(c6,c5,B2,S2);\n"
++    "    vec3 v = (r > 0) ? c6 : ((r < 0) ? c5 : avg2(c5,c6));\n"
++    "    p2b = v; p1b = v;\n"
++    "  } else {\n"
++    "    if (eq(c6,c3) && eq(c3,A1) && !eq(c2,A2) && !eq(c3,A0)) p2b = avg4(c3,c3,c3,c2);\n"
++    "    else if (eq(c5,c2) && eq(c2,A2) && !eq(A1,c3) && !eq(c2,A3)) p2b = avg4(c2,c2,c2,c3);\n"
++    "    else p2b = avg2(c2,c3);\n"
++    "    if (eq(c6,c3) && eq(c6,B1) && !eq(c5,B2) && !eq(c6,B0)) p1b = avg4(c6,c6,c6,c5);\n"
++    "    else if (eq(c5,c2) && eq(c5,B2) && !eq(B1,c6) && !eq(c5,B3)) p1b = avg4(c6,c5,c5,c5);\n"
++    "    else p1b = avg2(c5,c6);\n"
++    "  }\n"
++    "  if (eq(c5,c3) && !eq(c2,c6) && eq(c4,c5) && !eq(c5,A2)) p2a = avg2(c2,c5);\n"
++    "  else if (eq(c5,c1) && eq(c6,c5) && !eq(c4,c2) && !eq(c5,A0)) p2a = avg2(c2,c5);\n"
++    "  else p2a = c2;\n"
++    "  if (eq(c2,c6) && !eq(c5,c3) && eq(c1,c2) && !eq(c2,B2)) p1a = avg2(c2,c5);\n"
++    "  else if (eq(c4,c2) && eq(c3,c2) && !eq(c1,c5) && !eq(c2,B0)) p1a = avg2(c2,c5);\n"
++    "  else p1a = c5;\n"
++    "  vec3 r = (sub.y == 0) ? ((sub.x == 0) ? p1a : p1b) : ((sub.x == 0) ? p2a : p2b);\n"
++    "  frag = vec4(r, 1.0);\n"
++    "}\n";
++
++/* ---- Super Eagle ------------------------------------------------------------- */
++static const char *VF_SUPER_EAGLE_FS =
++    VF_UP_PROLOGUE
++    VF_GET_RESULT
++    VF_UP_MAIN
++    VF_SAI_NBR
++    "  if (eq(c2,c6) && !eq(c5,c3)) {\n"
++    "    p1b = c2; p2a = c2;\n"
++    "    if (eq(c1,c2) || eq(c6,B2)) { p1a = avg2(c2,c5); p1a = avg2(c2,p1a); }\n"
++    "    else p1a = avg2(c5,c6);\n"
++    "    if (eq(c6,S2) || eq(c2,A1)) { p2b = avg2(c2,c3); p2b = avg2(c2,p2b); }\n"
++    "    else p2b = avg2(c2,c3);\n"
++    "  } else if (eq(c5,c3) && !eq(c2,c6)) {\n"
++    "    p2b = c5; p1a = c5;\n"
++    "    if (eq(B1,c5) || eq(c3,S1)) { p1b = avg2(c5,c6); p1b = avg2(c5,p1b); }\n"
++    "    else p1b = avg2(c5,c6);\n"
++    "    if (eq(c3,A2) || eq(c4,c5)) { p2a = avg2(c5,c2); p2a = avg2(c5,p2a); }\n"
++    "    else p2a = avg2(c2,c3);\n"
++    "  } else if (eq(c5,c3) && eq(c2,c6)) {\n"
++    "    int r = 0;\n"
++    "    r += getr(c6,c5,c1,A1); r += getr(c6,c5,c4,B1); r += getr(c6,c5,A2,S1); r += getr(c6,c5,B2,S2);\n"
++    "    if (r > 0) { p1b = c2; p2a = c2; p1a = avg2(c5,c6); p2b = p1a; }\n"
++    "    else if (r < 0) { p2b = c5; p1a = c5; p1b = avg2(c5,c6); p2a = p1b; }\n"
++    "    else { p2b = c5; p1a = c5; p1b = c2; p2a = c2; }\n"
++    "  } else {\n"
++    "    vec3 t = avg2(c2,c6);\n"
++    "    p2b = avg4(c3,c3,c3,t);\n"
++    "    p1a = avg4(c5,c5,c5,t);\n"
++    "    vec3 u = avg2(c5,c2);\n"
++    "    p2a = avg4(c2,c2,c2,u);\n"
++    "    p1b = avg4(c6,c6,c6,u);\n"
++    "  }\n"
++    "  vec3 r = (sub.y == 0) ? ((sub.x == 0) ? p1a : p1b) : ((sub.x == 0) ? p2a : p2b);\n"
++    "  frag = vec4(r, 1.0);\n"
++    "}\n";
++
++/* ---- xBR level 2 (Hyllian) --------------------------------------------------- */
++static const char *VF_XBR_FS =
++    VF_UP_PROLOGUE
++    VF_UP_MAIN
++    "  /* Integer luma 299R+587G+114B of the 8-bit channels: exact in float on\n"
++    "   * both CPU and GPU (see VF_XBR_EQ_THRESHOLD in video_filter.h). */\n"
++    "  const float XBR_EQ_THRESHOLD = 79687.5;\n"
++    "  const float XBR_LV2_COEFF = 2.0;\n"
++    "  const float XBR_EPS = 0.5;\n"
++    "  const vec3 rgbw = vec3(299.0, 587.0, 114.0);\n"
++    "  #define LUM(c) dot(floor((c)*255.0 + 0.5), rgbw)\n"
++    "  const vec4 Ao = vec4( 1.0, -1.0, -1.0,  1.0 );\n"
++    "  const vec4 Bo = vec4( 1.0,  1.0, -1.0, -1.0 );\n"
++    "  const vec4 Co = vec4( 1.5,  0.5, -0.5,  0.5 );\n"
++    "  const vec4 Ax = vec4( 1.0, -1.0, -1.0,  1.0 );\n"
++    "  const vec4 Bx = vec4( 0.5,  2.0, -0.5, -2.0 );\n"
++    "  const vec4 Cx = vec4( 1.0,  1.0, -0.5,  0.0 );\n"
++    "  const vec4 Ay = vec4( 1.0, -1.0, -1.0,  1.0 );\n"
++    "  const vec4 By = vec4( 2.0,  0.5, -2.0, -0.5 );\n"
++    "  const vec4 Cy = vec4( 2.0,  0.0, -1.0,  0.5 );\n"
++    "  const vec4 Ci = vec4( 0.25, 0.25, 0.25, 0.25 );\n"
++    "  float S = float(u_scale);\n"
++    "  vec4 delta  = vec4(1.0/S);\n"
++    "  vec4 deltaL = vec4(0.5/S, 1.0/S, 0.5/S, 1.0/S);\n"
++    "  vec4 deltaU = deltaL.yxwz;\n"
++    "  vec2 fp = (vec2(sub) + 0.5) / S;\n"
++    "  vec3 A1=P(-1,-2), B1=P(0,-2), C1=P(1,-2);\n"
++    "  vec3 A0=P(-2,-1), A=P(-1,-1), B=P(0,-1), C=P(1,-1), C4=P(2,-1);\n"
++    "  vec3 D0=P(-2, 0), D=P(-1, 0), E=P(0, 0), F=P(1, 0), F4=P(2, 0);\n"
++    "  vec3 G0=P(-2, 1), G=P(-1, 1), H=P(0, 1), I=P(1, 1), I4=P(2, 1);\n"
++    "  vec3 G5=P(-1, 2), H5=P(0, 2), I5=P(1, 2);\n"
++    "  vec4 b  = vec4(LUM(B), LUM(D), LUM(H), LUM(F));\n"
++    "  vec4 c  = vec4(LUM(C), LUM(A), LUM(G), LUM(I));\n"
++    "  vec4 d  = b.yzwx;\n"
++    "  vec4 e  = vec4(LUM(E));\n"
++    "  vec4 f  = b.wxyz;\n"
++    "  vec4 g  = c.zwxy;\n"
++    "  vec4 h  = b.zwxy;\n"
++    "  vec4 i  = c.wxyz;\n"
++    "  vec4 i4 = vec4(LUM(I4), LUM(C1), LUM(A0), LUM(G5));\n"
++    "  vec4 i5 = vec4(LUM(I5), LUM(C4), LUM(A1), LUM(G0));\n"
++    "  vec4 h5 = vec4(LUM(H5), LUM(F4), LUM(B1), LUM(D0));\n"
++    "  vec4 f4 = h5.yzwx;\n"
++    "  vec4 fx      = Ao*fp.y + Bo*fp.x;\n"
++    "  vec4 fx_left = Ax*fp.y + Bx*fp.x;\n"
++    "  vec4 fx_up   = Ay*fp.y + By*fp.x;\n"
++    "  bvec4 lv0 = bvec4(notEqual(e,f).x && notEqual(e,h).x, notEqual(e,f).y && notEqual(e,h).y,\n"
++    "                    notEqual(e,f).z && notEqual(e,h).z, notEqual(e,f).w && notEqual(e,h).w);\n"
++    "  /* eq(): luma distance below threshold. */\n"
++    "  #define EQ(a,b) lessThan(abs((a)-(b)), vec4(XBR_EQ_THRESHOLD))\n"
++    "  #define NEQ(a,b) not(EQ(a,b))\n"
++    "  bvec4 nfb = NEQ(f,b), nfc = NEQ(f,c), nhd = NEQ(h,d), nhg = NEQ(h,g);\n"
++    "  bvec4 eei = EQ(e,i), nff4 = NEQ(f,f4), nfi4 = NEQ(f,i4), nhh5 = NEQ(h,h5), nhi5 = NEQ(h,i5);\n"
++    "  bvec4 eeg = EQ(e,g), eec = EQ(e,c);\n"
++    "  bvec4 lv1;\n"
++    "  for (int k = 0; k < 4; k++) {\n"
++    "    /* Corner rule C: keep more 90-degree corners intact. */\n"
++    "    lv1[k] = lv0[k] && ((nfb[k] && nfc[k]) || (nhd[k] && nhg[k]) ||\n"
++    "                        (eei[k] && ((nff4[k] && nfi4[k]) || (nhh5[k] && nhi5[k]))) ||\n"
++    "                        eeg[k] || eec[k]);\n"
++    "  }\n"
++    "  bvec4 lv2l = bvec4(notEqual(e,g).x && notEqual(d,g).x, notEqual(e,g).y && notEqual(d,g).y,\n"
++    "                     notEqual(e,g).z && notEqual(d,g).z, notEqual(e,g).w && notEqual(d,g).w);\n"
++    "  bvec4 lv2u = bvec4(notEqual(e,c).x && notEqual(b,c).x, notEqual(e,c).y && notEqual(b,c).y,\n"
++    "                     notEqual(e,c).z && notEqual(b,c).z, notEqual(e,c).w && notEqual(b,c).w);\n"
++    "  /* Weights are exact multiples of 1/8 (see video_filter.c snap_eighth). */\n"
++    "  #define Q4(v) (floor((v)*8.0 + 0.5)*0.125)\n"
++    "  vec4 fx45i = Q4(clamp((fx      + delta  - Co - Ci)/(2.0*delta ), 0.0, 1.0));\n"
++    "  vec4 fx45  = Q4(clamp((fx      + delta  - Co     )/(2.0*delta ), 0.0, 1.0));\n"
++    "  vec4 fx30  = Q4(clamp((fx_left + deltaL - Cx     )/(2.0*deltaL), 0.0, 1.0));\n"
++    "  vec4 fx60  = Q4(clamp((fx_up   + deltaU - Cy     )/(2.0*deltaU), 0.0, 1.0));\n"
++    "  vec4 wd1 = abs(e-c) + abs(e-g) + abs(i-h5) + abs(i-f4) + 4.0*abs(h-f);\n"
++    "  vec4 wd2 = abs(h-d) + abs(h-i5) + abs(f-i4) + abs(f-b) + 4.0*abs(e-i);\n"
++    "  vec4 edri = step(wd1, wd2) * vec4(lv0);\n"
++    "  vec4 edr  = step(wd1 + XBR_EPS, wd2) * vec4(lv1);\n"
++    "  vec4 edr_left = step(XBR_LV2_COEFF*abs(f-g), abs(h-c)) * vec4(lv2l) * edr;\n"
++    "  vec4 edr_up   = step(XBR_LV2_COEFF*abs(h-c), abs(f-g)) * vec4(lv2u) * edr;\n"
++    "  fx45  = edr*fx45;\n"
++    "  fx30  = edr_left*fx30;\n"
++    "  fx60  = edr_up*fx60;\n"
++    "  fx45i = edri*fx45i;\n"
++    "  vec4 px = step(abs(e-f), abs(e-h));\n"
++    "  vec4 maximos = max(max(fx30, fx60), max(fx45, fx45i));\n"
++    "  /* Blend in the exact 0..255 integer domain (matches the CPU reference). */\n"
++    "  #define C255(c) floor((c)*255.0 + 0.5)\n"
++    "  vec3 E8 = C255(E), B8 = C255(B), D8 = C255(D), F8 = C255(F), H8 = C255(H);\n"
++    "  vec3 res1 = E8;\n"
++    "  res1 = mix(res1, mix(H8, F8, px.x), maximos.x);\n"
++    "  res1 = mix(res1, mix(B8, D8, px.z), maximos.z);\n"
++    "  vec3 res2 = E8;\n"
++    "  res2 = mix(res2, mix(F8, B8, px.y), maximos.y);\n"
++    "  res2 = mix(res2, mix(D8, H8, px.w), maximos.w);\n"
++    "  vec3 dE1 = abs(E8-res1), dE2 = abs(E8-res2);\n"
++    "  float c1 = dE1.r + dE1.g + dE1.b, c2 = dE2.r + dE2.g + dE2.b;\n"
++    "  vec3 res = mix(res1, res2, step(c1, c2));\n"
++    "  frag = vec4(res / 255.0, 1.0);\n"
++    "}\n";
++
++/* ---- Final pass: sharp bilinear / scanlines / CRT ------------------------------
++ * Draws with PRESENT_VS. v_uv spans the letterbox quad in [0,1]^2 with row 0 =
++ * top of the picture (the caller flips via u_uv_rect when the texture is
++ * bottom-up). u_rect is the source rectangle in texels of u_tex, u_texsize the
++ * texture size, u_out the viewport size in pixels, u_native the unscaled
++ * source size in PS1 pixels (scanline pitch), u_mode 0 sharp / 1 scanlines /
++ * 2 crt. The bound texture must have GL_LINEAR filtering (sharp/scanline
++ * sample bilinearly at computed positions; CRT uses texelFetch). */
++static const char *VF_FINAL_FS =
++    "#version 330\n"
++    "in vec2 v_uv;\n"
++    "uniform sampler2D u_tex;\n"
++    "uniform vec4  u_rect;\n"
++    "uniform vec2  u_texsize;\n"
++    "uniform vec2  u_out;\n"
++    "uniform vec2  u_native;\n"
++    "uniform int   u_mode;\n"
++    "out vec4 frag;\n"
++    "vec3 sample_lin(vec2 pos){\n"
++    "  pos = clamp(pos, u_rect.xy + 0.5, u_rect.xy + u_rect.zw - 0.5);\n"
++    "  return texture(u_tex, pos / u_texsize).rgb; }\n"
++    "vec3 fetch_px(vec2 pn){   /* pn: native pixel coords (rect-local) */\n"
++    "  vec2 t = floor(pn) * (u_rect.zw / u_native) + u_rect.xy;\n"
++    "  ivec2 ti = clamp(ivec2(floor(t)), ivec2(u_rect.xy), ivec2(u_rect.xy + u_rect.zw) - 1);\n"
++    "  return texelFetch(u_tex, ti, 0).rgb; }\n"
++    "vec2 sharp_pos(vec2 p){\n"
++    "  vec2 scale = max(floor(u_out / u_rect.zw), vec2(1.0));\n"
++    "  vec2 tf = floor(p); vec2 s = fract(p);\n"
++    "  vec2 region_range = 0.5 - 0.5 / scale;\n"
++    "  vec2 cd = s - 0.5;\n"
++    "  vec2 f = (cd - clamp(cd, -region_range, region_range)) * scale + 0.5;\n"
++    "  return tf + f; }\n"
++    "vec3 ToLinear(vec3 c){ return mix(c/12.92, pow((c+0.055)/1.055, vec3(2.4)), step(0.04045, c)); }\n"
++    "vec3 ToSrgb(vec3 c){ return mix(c*12.92, 1.055*pow(c, vec3(1.0/2.4))-0.055, step(0.0031308, c)); }\n"
++    "float Gaus(float pos, float scale){ return exp2(scale*pos*pos); }\n"
++    "vec3 Fetch(vec2 pn, vec2 off){ return ToLinear(fetch_px(pn + off)); }\n"
++    "vec2 Dist(vec2 pn){ return -((pn - floor(pn)) - 0.5); }\n"
++    "vec3 Horz3(vec2 pn, float off){\n"
++    "  vec3 b = Fetch(pn, vec2(-1.0, off)), c = Fetch(pn, vec2(0.0, off)), d = Fetch(pn, vec2(1.0, off));\n"
++    "  float dst = Dist(pn).x; const float hardPix = -3.0;\n"
++    "  float wb = Gaus(dst-1.0, hardPix), wc = Gaus(dst, hardPix), wd = Gaus(dst+1.0, hardPix);\n"
++    "  return (b*wb + c*wc + d*wd) / (wb+wc+wd); }\n"
++    "vec3 Horz5(vec2 pn, float off){\n"
++    "  vec3 a = Fetch(pn, vec2(-2.0, off)), b = Fetch(pn, vec2(-1.0, off)), c = Fetch(pn, vec2(0.0, off)),\n"
++    "       d = Fetch(pn, vec2(1.0, off)), e = Fetch(pn, vec2(2.0, off));\n"
++    "  float dst = Dist(pn).x; const float hardPix = -3.0;\n"
++    "  float wa = Gaus(dst-2.0, hardPix), wb = Gaus(dst-1.0, hardPix), wc = Gaus(dst, hardPix),\n"
++    "        wd = Gaus(dst+1.0, hardPix), we = Gaus(dst+2.0, hardPix);\n"
++    "  return (a*wa + b*wb + c*wc + d*wd + e*we) / (wa+wb+wc+wd+we); }\n"
++    "float Scan(vec2 pn, float off){ float dst = Dist(pn).y; return Gaus(dst + off, -8.0); }\n"
++    "vec3 Tri(vec2 pn){\n"
++    "  vec3 a = Horz3(pn, -1.0), b = Horz5(pn, 0.0), c = Horz3(pn, 1.0);\n"
++    "  float wa = Scan(pn, -1.0), wb = Scan(pn, 0.0), wc = Scan(pn, 1.0);\n"
++    "  return a*wa + b*wb + c*wc; }\n"
++    "vec3 Mask(vec2 pos){   /* aperture grille, 3 px pitch */\n"
++    "  const float maskDark = 0.6, maskLight = 1.4;\n"
++    "  vec3 mask = vec3(maskDark);\n"
++    "  float x = fract(pos.x / 3.0);\n"
++    "  if (x < 0.333) mask.r = maskLight; else if (x < 0.666) mask.g = maskLight; else mask.b = maskLight;\n"
++    "  return mask; }\n"
++    "void main(){\n"
++    "  vec2 p = v_uv * u_rect.zw;              /* continuous texel coords inside the rect */\n"
++    "  if (u_mode == 2) {\n"
++    "    vec2 pn = v_uv * u_native;             /* native pixel coords */\n"
++    "    vec3 c = Tri(pn) * Mask(gl_FragCoord.xy);\n"
++    "    frag = vec4(ToSrgb(clamp(c, 0.0, 1.0)), 1.0);\n"
++    "    return;\n"
++    "  }\n"
++    "  vec3 c = sample_lin(u_rect.xy + sharp_pos(p));\n"
++    "  if (u_mode == 1) {\n"
++    "    float ly = fract(v_uv.y * u_native.y);\n"
++    "    float d = abs(ly - 0.5);\n"
++    "    c *= 1.0 - 0.45 * smoothstep(0.25, 0.5, d);\n"
++    "  }\n"
++    "  frag = vec4(c, 1.0);\n"
++    "}\n";
++
++#endif /* PSXRECOMP_GPU_GL_FILTER_SHADERS_H */
+diff --git a/runtime/src/gpu_gl_renderer.c b/runtime/src/gpu_gl_renderer.c
+index c7b7732..30dc9fb 100644
+--- a/runtime/src/gpu_gl_renderer.c
++++ b/runtime/src/gpu_gl_renderer.c
+@@ -72,6 +72,8 @@
+ #include "host_time.h"
+ #include "latency_ring.h"
+ #include "psx_rewind.h"
++#include "video_filter.h"
++#include "png_write.h"
+ 
+ #include "psx_sdl.h"
+ #if defined(PSX_SDL3)
+@@ -147,6 +149,7 @@ typedef void   (APIENTRY *PFN_glUniform1f)(GLint, GLfloat);
+ typedef void   (APIENTRY *PFN_glUniform2i)(GLint, GLint, GLint);
+ typedef void   (APIENTRY *PFN_glUniform4i)(GLint, GLint, GLint, GLint, GLint);
+ typedef void   (APIENTRY *PFN_glUniform4f)(GLint, GLfloat, GLfloat, GLfloat, GLfloat);
++typedef void   (APIENTRY *PFN_glUniform2f)(GLint, GLfloat, GLfloat);
+ typedef void   (APIENTRY *PFN_glBlendColor)(GLfloat, GLfloat, GLfloat, GLfloat);
+ typedef void   (APIENTRY *PFN_glBlendFuncSeparate)(GLenum, GLenum, GLenum, GLenum);
+ typedef void   (APIENTRY *PFN_glBlendEquationSeparate)(GLenum, GLenum);
+@@ -212,6 +215,7 @@ static PFN_glUniform1f         p_glUniform1f;
+ static PFN_glUniform2i         p_glUniform2i;
+ static PFN_glUniform4i         p_glUniform4i;
+ static PFN_glUniform4f         p_glUniform4f;
++static PFN_glUniform2f         p_glUniform2f;
+ static PFN_glBlendColor        p_glBlendColor;
+ static PFN_glBlendFuncSeparate p_glBlendFuncSeparate;
+ static PFN_glBlendEquationSeparate p_glBlendEquationSeparate;
+@@ -269,6 +273,7 @@ static int load_modern_gl(void) {
+     LOAD(p_glUniform1f, "glUniform1f");
+     LOAD(p_glUniform2i, "glUniform2i"); LOAD(p_glUniform4i, "glUniform4i");
+     LOAD(p_glUniform4f, "glUniform4f");
++    LOAD(p_glUniform2f, "glUniform2f");
+     LOAD(p_glBlendColor, "glBlendColor");
+     LOAD(p_glBlendFuncSeparate, "glBlendFuncSeparate");
+     LOAD(p_glBlendEquationSeparate, "glBlendEquationSeparate");
+@@ -765,7 +770,19 @@ static void letterbox_rect_aspect(int ww, int wh, int num, int den,
+ static void letterbox_rect(int ww, int wh, int *x, int *y, int *w, int *h);
+ static void present_target_quad(GLuint tex, int tex_w, int tex_h,
+                                 int x, int y, int w, int h, int linear,
+-                                int lx, int ly, int lw, int lh, int v_flip);
++                                int lx, int ly, int lw, int lh, int v_flip,
++                                int native_w, int native_h);
++/* Present-time video filter helpers (defined next to present_target_quad). */
++static void   vf_reset_gl_state(void);
++static int    vf_ensure_programs(int kind);
++static GLuint vf_fbo_for_current_context(void);
++static void   vf_ensure_tex(GLuint *tex, int *cur_w, int *cur_h, int w, int h);
++static int    vf_present(GLuint tex, int tex_w, int tex_h, int x, int y, int w, int h,
++                         int native_w, int native_h, int lx, int ly, int lw, int lh, int v_flip);
++static void   vf_capture_drawable_if_pending(void);
++static void   vf_capture_source(GLuint tex, int rx, int ry, int rw, int rh, int kind);
++static GLuint s_vf_blend_tex;                      /* interp blend target */
++static int    s_vf_blend_w, s_vf_blend_h;
+ 
+ static void coh_record(int kind, int x0, int y0, int x1, int y1) {
+     GlCohEvent *e = &s_coh_ring[s_coh_seq % GL_COH_RING_CAP];
+@@ -2823,6 +2840,7 @@ void gl_renderer_shutdown(void) {
+     s_osd_tex = 0;
+     s_osd_tw = 0;
+     s_osd_th = 0;
++    vf_reset_gl_state();
+     s_depth24_skip_up = 0;
+     rect_clear(&s_d24_skip_fb);
+     hold_invalidate();
+@@ -2877,6 +2895,23 @@ void gl_renderer_present(const uint32_t *pixels, int src_w, int src_h, int linea
+     glViewport(lx, ly, lw, lh);
+     p_glActiveTexture(PSXGL_TEXTURE0);
+     upload_present_tex(pixels, src_w, src_h, linear);
++    /* Opt-in video filter: same rect semantics as the plain draw below (the
++     * cropped width, when any, is the visible content). */
++    if (video_filter_get() != VF_NONE && src_w > 0 && src_h > 0) {
++        const int vw = crop ? content_w : src_w;
++        if (vf_present(s_present_tex, src_w, src_h, 0, 0, vw, src_h, vw, src_h,
++                       lx, ly, lw, lh, 1)) {
++            pres_record(GL_PRES_CPU, 0, 0, src_w, src_h, lx, ly, lw, lh);
++            hold_capture_drawable();
++            latency_ring_mark(LAT_SWAP_BEGIN);
++            gl_swap_with_osd();
++            latency_ring_mark(LAT_SWAP_END);
++            s_probe_swap++;
++            present_force_consumed();
++            s_last_present_path = GL_PRES_CPU;
++            return;
++        }
++    }
+     p_glUseProgram(s_present_prog); p_glUniform1i(s_present_uTex, 0);
+     if (crop) {
+         /* Cropped present keeps left-aligned content; still inset so linear
+@@ -3749,8 +3784,32 @@ static void interp_draw_quad(float alpha, int lx, int ly, int lw, int lh) {
+         p_glWaitSync(s_interp_fence[prev], 0, PSXGL_TIMEOUT_IGNORED);
+     if (s_interp_fence[curr])
+         p_glWaitSync(s_interp_fence[curr], 0, PSXGL_TIMEOUT_IGNORED);
+-    p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
+-    glViewport(lx, ly, lw, lh);
++    /* Opt-in video filter: blend prev/curr into an offscreen texture at the
++     * history resolution, then run the same filtered present on it. Falls
++     * back to the direct blend below on any failure. */
++    int vf_target = 0;
++    GLuint vf_fbo = 0;
++    if (video_filter_get() != VF_NONE && s_interp_w > 0 && s_interp_h > 0 &&
++        vf_ensure_programs(video_filter_get())) {
++        vf_fbo = vf_fbo_for_current_context();
++        if (vf_fbo) {
++            vf_ensure_tex(&s_vf_blend_tex, &s_vf_blend_w, &s_vf_blend_h, s_interp_w, s_interp_h);
++            p_glBindFramebuffer(PSXGL_FRAMEBUFFER, vf_fbo);
++            p_glFramebufferTexture2D(PSXGL_FRAMEBUFFER, PSXGL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
++                                     s_vf_blend_tex, 0);
++            if (p_glCheckFramebufferStatus(PSXGL_FRAMEBUFFER) == PSXGL_FRAMEBUFFER_COMPLETE) {
++                vf_target = 1;
++                glDisable(GL_SCISSOR_TEST);
++                glViewport(0, 0, s_interp_w, s_interp_h);
++            } else {
++                p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
++            }
++        }
++    }
++    if (!vf_target) {
++        p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
++        glViewport(lx, ly, lw, lh);
++    }
+     p_glActiveTexture(PSXGL_TEXTURE0);
+     glBindTexture(GL_TEXTURE_2D, s_interp_tex[prev]);
+     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, s_interp_linear ? GL_LINEAR : GL_NEAREST);
+@@ -3764,12 +3823,34 @@ static void interp_draw_quad(float alpha, int lx, int ly, int lw, int lh) {
+     p_glUniform1i(s_interp_uCurr, 1);
+     p_glUniform1f(s_interp_uAlpha, alpha);
+     p_glUniform1i(s_interp_uBlendMode, s_interp_blend_mode);
+-    p_glUniform4f(s_interp_uUvRect, 0.f, 0.f, 1.f, 1.f);
++    /* Offscreen blend: keep the history orientation (row 0 = top) so the
++     * filtered present can treat it like every other picture source. */
++    if (vf_target) p_glUniform4f(s_interp_uUvRect, 0.f, 1.f, 1.f, 0.f);
++    else           p_glUniform4f(s_interp_uUvRect, 0.f, 0.f, 1.f, 1.f);
+     p_glBindVertexArray(s_interp_thread_vao);
+     glDrawArrays(GL_TRIANGLES, 0, 3);
+     p_glBindVertexArray(0);
+     p_glUseProgram(0);
+     p_glActiveTexture(PSXGL_TEXTURE0);
++    if (vf_target) {
++        p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
++        const int S = s_scale > 0 ? s_scale : 1;
++        if (!vf_present(s_vf_blend_tex, s_interp_w, s_interp_h, 0, 0, s_interp_w, s_interp_h,
++                        s_interp_w / S, s_interp_h / S, lx, ly, lw, lh, 1)) {
++            /* Filter refused after the blend: draw the blend texture plainly. */
++            glViewport(lx, ly, lw, lh);
++            glBindTexture(GL_TEXTURE_2D, s_vf_blend_tex);
++            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, s_interp_linear ? GL_LINEAR : GL_NEAREST);
++            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, s_interp_linear ? GL_LINEAR : GL_NEAREST);
++            p_glUseProgram(s_present_prog);
++            p_glUniform1i(s_present_uTex, 0);
++            p_glUniform4f(s_present_uUvRect, 0.f, 0.f, 1.f, 1.f);
++            p_glBindVertexArray(s_interp_thread_vao);
++            glDrawArrays(GL_TRIANGLES, 0, 3);
++            p_glBindVertexArray(0);
++            p_glUseProgram(0);
++        }
++    }
+ }
+ 
+ static int interp_present(void) {
+@@ -3923,6 +4004,7 @@ static void gl_draw_osd_image(const uint32_t *px, int ow, int oh,
+ 
+ /* Composite host toast + volume bar into the default framebuffer, then swap. */
+ static void gl_swap_with_osd(void) {
++    vf_capture_drawable_if_pending();
+     if (s_present_prog && s_ctx) {
+         int ww = 0, wh = 0;
+         SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+@@ -3961,10 +4043,361 @@ static void gl_swap_with_osd(void) {
+     SDL_GL_SwapWindow(s_win);
+ }
+ 
++/* ---- present-time video filters (video_filter.h) ---------------------------
++ *
++ * Two GPU passes at most, both fed by the CPU reference's contract:
++ *   pass A (upscalers only): source rect -> s_vf_tex at (w*N, h*N) texels via
++ *          the per-kind fragment shader (gpu_gl_filter_shaders.h);
++ *   pass B (always): VF_FINAL_FS draws either s_vf_tex (mode sharp) or the
++ *          source rect (sharp / scanlines / crt) into the letterbox viewport.
++ * VF_NONE never enters here — the caller keeps the historical present path,
++ * so the default is byte-identical to a build without the feature. Any
++ * shader-compile failure marks that kind broken for the session and the
++ * caller falls back to the plain present (recorded in the diag counters,
++ * readable through the debug server; nothing is retried per frame). */
++#include "gpu_gl_filter_shaders.h"
++
++static GLuint s_vf_up_prog[VF_COUNT];              /* per-kind upscaler programs (xBR shared) */
++static GLint  s_vf_up_uTex[VF_COUNT], s_vf_up_uRect[VF_COUNT], s_vf_up_uScale[VF_COUNT];
++static GLuint s_vf_final_prog = 0;
++static GLint  s_vf_f_uTex = -1, s_vf_f_uRect = -1, s_vf_f_uTexSize = -1, s_vf_f_uOut = -1,
++              s_vf_f_uNative = -1, s_vf_f_uMode = -1, s_vf_f_uUvRect = -1;
++static uint32_t s_vf_broken = 0;                   /* bit per kind: shader failed */
++/* Pass-A output, one per GL context (main / interp thread) — container objects
++ * (FBOs) are per-context anyway and a texture resized from two contexts at
++ * once would race; index = the same slot vf_fbo_slot() hands out. */
++static GLuint s_vf_tex[2];
++static int    s_vf_tex_w[2], s_vf_tex_h[2];
++/* FBOs are per-context objects: one for the main context, one for the interp thread. */
++static SDL_GLContext s_vf_fbo_ctx[2];
++static GLuint        s_vf_fbo[2];
++static uint64_t s_vf_passes = 0, s_vf_fallbacks = 0;
++static int      s_vf_last_kind = 0;
++/* One-shot capture of the presented drawable (debug server "present_capture"). */
++static char s_vf_capture_path[512];
++static int  s_vf_capture_pending = 0;
++static int  s_vf_capture_result = 0;   /* 0 idle/none, 1 ok, -1 failed */
++static int  s_vf_capture_companions = 1;   /* also write .src/.up/.ref companions */
++
++static void vf_reset_gl_state(void) {
++    for (int k = 0; k < VF_COUNT; k++) s_vf_up_prog[k] = 0;
++    s_vf_final_prog = 0;
++    s_vf_broken = 0;
++    for (int i = 0; i < 2; i++) { s_vf_tex[i] = 0; s_vf_tex_w[i] = s_vf_tex_h[i] = 0; }
++    s_vf_blend_tex = 0; s_vf_blend_w = s_vf_blend_h = 0;
++    for (int i = 0; i < 2; i++) { s_vf_fbo_ctx[i] = NULL; s_vf_fbo[i] = 0; }
++}
++
++static const char *vf_up_source(int kind) {
++    switch (kind) {
++    case VF_SCALE2X:     return VF_SCALE2X_FS;
++    case VF_SCALE3X:     return VF_SCALE3X_FS;
++    case VF_SAI2X:       return VF_SAI2X_FS;
++    case VF_SUPER_SAI2X: return VF_SUPER_SAI2X_FS;
++    case VF_SUPER_EAGLE: return VF_SUPER_EAGLE_FS;
++    case VF_XBR2X: case VF_XBR3X: case VF_XBR4X: return VF_XBR_FS;
++    default: return NULL;
++    }
++}
++
++/* Lazily build the programs `kind` needs. Returns 0 (and marks the kind
++ * broken) if a shader fails, so the caller falls back to the plain present. */
++static int vf_ensure_programs(int kind) {
++    if (kind <= VF_NONE || kind >= VF_COUNT) return 0;
++    if (s_vf_broken & (1u << kind)) return 0;
++    if (!s_vf_final_prog) {
++        s_vf_final_prog = build_program(PRESENT_VS, VF_FINAL_FS);
++        if (!s_vf_final_prog) { s_vf_broken |= ~0u; return 0; }
++        s_vf_f_uTex     = p_glGetUniformLocation(s_vf_final_prog, "u_tex");
++        s_vf_f_uRect    = p_glGetUniformLocation(s_vf_final_prog, "u_rect");
++        s_vf_f_uTexSize = p_glGetUniformLocation(s_vf_final_prog, "u_texsize");
++        s_vf_f_uOut     = p_glGetUniformLocation(s_vf_final_prog, "u_out");
++        s_vf_f_uNative  = p_glGetUniformLocation(s_vf_final_prog, "u_native");
++        s_vf_f_uMode    = p_glGetUniformLocation(s_vf_final_prog, "u_mode");
++        s_vf_f_uUvRect  = p_glGetUniformLocation(s_vf_final_prog, "u_uv_rect");
++    }
++    if (video_filter_is_upscaler(kind) && !s_vf_up_prog[kind]) {
++        /* xBR 2x/3x/4x share one program (u_scale). */
++        int share = (kind == VF_XBR3X || kind == VF_XBR4X) ? VF_XBR2X : kind;
++        if (!s_vf_up_prog[share]) {
++            const char *src = vf_up_source(share);
++            GLuint p = src ? build_program(VF_UP_VS, src) : 0;
++            if (!p) { s_vf_broken |= (1u << kind); return 0; }
++            s_vf_up_prog[share]   = p;
++            s_vf_up_uTex[share]   = p_glGetUniformLocation(p, "u_tex");
++            s_vf_up_uRect[share]  = p_glGetUniformLocation(p, "u_rect");
++            s_vf_up_uScale[share] = p_glGetUniformLocation(p, "u_scale");
++        }
++        s_vf_up_prog[kind]   = s_vf_up_prog[share];
++        s_vf_up_uTex[kind]   = s_vf_up_uTex[share];
++        s_vf_up_uRect[kind]  = s_vf_up_uRect[share];
++        s_vf_up_uScale[kind] = s_vf_up_uScale[share];
++    }
++    return 1;
++}
++
++/* Slot (0/1) of the current GL context's FBO + pass-A texture; -1 if none free. */
++static int vf_slot_for_current_context(void) {
++    SDL_GLContext cur = SDL_GL_GetCurrentContext();
++    for (int i = 0; i < 2; i++)
++        if (s_vf_fbo_ctx[i] == cur && s_vf_fbo[i]) return i;
++    for (int i = 0; i < 2; i++) {
++        if (!s_vf_fbo[i]) {
++            p_glGenFramebuffers(1, &s_vf_fbo[i]);
++            s_vf_fbo_ctx[i] = cur;
++            return i;
++        }
++    }
++    return -1;
++}
++static GLuint vf_fbo_for_current_context(void) {
++    const int slot = vf_slot_for_current_context();
++    return slot < 0 ? 0 : s_vf_fbo[slot];
++}
++
++static GLuint vf_current_vao(void) {
++    if (s_interp_ctx && SDL_GL_GetCurrentContext() == s_interp_ctx && s_interp_thread_vao)
++        return s_interp_thread_vao;
++    return s_present_vao;
++}
++
++static void vf_ensure_tex(GLuint *tex, int *cur_w, int *cur_h, int w, int h) {
++    if (!*tex) {
++        glGenTextures(1, tex);
++        glBindTexture(GL_TEXTURE_2D, *tex);
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++        *cur_w = *cur_h = 0;
++    } else {
++        glBindTexture(GL_TEXTURE_2D, *tex);
++    }
++    if (*cur_w != w || *cur_h != h) {
++        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
++        *cur_w = w; *cur_h = h;
++    }
++}
++
++/* Draw the filtered present of (tex, rect) into the letterbox viewport.
++ *   tex_w/tex_h : the texture size the caller reasons in (may be the native
++ *                 VRAM size while the texture is s_scale times larger — the
++ *                 real size is queried, and the rect scaled to real texels);
++ *   x,y,w,h     : source rect in the caller's units; native_w/native_h : the
++ *                 unscaled PS1 size of that rect (scanline pitch);
++ *   v_flip      : 1 = texel row 0 is the top of the picture (every source we
++ *                 filter), 0 = bottom-up (screen captures — never filtered).
++ * Returns 1 if it drew, 0 if the caller must fall back to the plain present. */
++static int vf_present(GLuint tex, int tex_w, int tex_h, int x, int y, int w, int h,
++                      int native_w, int native_h, int lx, int ly, int lw, int lh, int v_flip) {
++    const int kind = video_filter_get();
++    if (kind == VF_NONE || !v_flip || w <= 0 || h <= 0 || tex_w <= 0 || tex_h <= 0)
++        return 0;
++    if (!vf_ensure_programs(kind)) { s_vf_fallbacks++; return 0; }
++
++    /* Real texel size of the bound texture (hr textures are s_scale x native). */
++    GLint real_w = 0, real_h = 0;
++    p_glActiveTexture(PSXGL_TEXTURE0);
++    glBindTexture(GL_TEXTURE_2D, tex);
++    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &real_w);
++    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &real_h);
++    if (real_w <= 0 || real_h <= 0) { s_vf_fallbacks++; return 0; }
++    const int sx = real_w / tex_w > 0 ? real_w / tex_w : 1;
++    const int sy = real_h / tex_h > 0 ? real_h / tex_h : 1;
++    int rx = x * sx, ry = y * sy, rw = w * sx, rh = h * sy;
++    if (rx < 0) rx = 0; if (ry < 0) ry = 0;
++    if (rx + rw > real_w) rw = real_w - rx;
++    if (ry + rh > real_h) rh = real_h - ry;
++    if (rw <= 0 || rh <= 0) { s_vf_fallbacks++; return 0; }
++    if (native_w <= 0) native_w = w;
++    if (native_h <= 0) native_h = h;
++    vf_capture_source(tex, rx, ry, rw, rh, kind);
++
++    GLuint final_tex = tex;
++    int f_tw = real_w, f_th = real_h;
++    int f_rx = rx, f_ry = ry, f_rw = rw, f_rh = rh;
++    const int N = video_filter_scale(kind);
++    if (N > 1) {
++        const int ow = rw * N, oh = rh * N;
++        if (ow > 8192 || oh > 8192) { s_vf_fallbacks++; return 0; }
++        const int slot = vf_slot_for_current_context();
++        if (slot < 0) { s_vf_fallbacks++; return 0; }
++        GLuint fbo = s_vf_fbo[slot];
++        vf_ensure_tex(&s_vf_tex[slot], &s_vf_tex_w[slot], &s_vf_tex_h[slot], ow, oh);
++        p_glBindFramebuffer(PSXGL_FRAMEBUFFER, fbo);
++        p_glFramebufferTexture2D(PSXGL_FRAMEBUFFER, PSXGL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s_vf_tex[slot], 0);
++        if (p_glCheckFramebufferStatus(PSXGL_FRAMEBUFFER) != PSXGL_FRAMEBUFFER_COMPLETE) {
++            p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
++            s_vf_broken |= (1u << kind); s_vf_fallbacks++; return 0;
++        }
++        glDisable(GL_SCISSOR_TEST);
++        glDisable(GL_BLEND);
++        glViewport(0, 0, ow, oh);
++        p_glActiveTexture(PSXGL_TEXTURE0);
++        glBindTexture(GL_TEXTURE_2D, tex);
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++        p_glUseProgram(s_vf_up_prog[kind]);
++        p_glUniform1i(s_vf_up_uTex[kind], 0);
++        p_glUniform4i(s_vf_up_uRect[kind], rx, ry, rw, rh);
++        p_glUniform1i(s_vf_up_uScale[kind], N);
++        p_glBindVertexArray(vf_current_vao());
++        glDrawArrays(GL_TRIANGLES, 0, 3);
++        p_glBindVertexArray(0);
++        if (s_vf_capture_pending && s_vf_capture_companions) {
++            /* Diagnostic companion: the raw upscaler output before the final
++             * fit (`<path>.up.png`), so pass A and pass B can be blamed apart. */
++            uint8_t *rgb = (uint8_t *)malloc((size_t)ow * oh * 3);
++            if (rgb) {
++                glPixelStorei(GL_PACK_ALIGNMENT, 1);
++                glReadPixels(0, 0, ow, oh, GL_RGB, GL_UNSIGNED_BYTE, rgb);
++                char path[560];
++                snprintf(path, sizeof path, "%s.up.png", s_vf_capture_path);
++                FILE *f = fopen(path, "wb");
++                if (f) { png_write_rgb(f, rgb, (uint32_t)ow, (uint32_t)oh); fclose(f); }
++                free(rgb);
++            }
++        }
++        p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
++        final_tex = s_vf_tex[slot];
++        f_tw = ow; f_th = oh; f_rx = 0; f_ry = 0; f_rw = ow; f_rh = oh;
++    }
++
++    /* Pass B: final draw into the letterbox rect. */
++    int mode = 0;
++    if (kind == VF_SCANLINES) mode = 1;
++    else if (kind == VF_CRT) mode = 2;
++    p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
++    glViewport(lx, ly, lw, lh);
++    p_glActiveTexture(PSXGL_TEXTURE0);
++    glBindTexture(GL_TEXTURE_2D, final_tex);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++    p_glUseProgram(s_vf_final_prog);
++    p_glUniform1i(s_vf_f_uTex, 0);
++    p_glUniform4f(s_vf_f_uRect, (float)f_rx, (float)f_ry, (float)f_rw, (float)f_rh);
++    p_glUniform2f(s_vf_f_uTexSize, (float)f_tw, (float)f_th);
++    p_glUniform2f(s_vf_f_uOut, (float)lw, (float)lh);
++    p_glUniform2f(s_vf_f_uNative, (float)native_w, (float)native_h);
++    p_glUniform1i(s_vf_f_uMode, mode);
++    /* Row 0 = top: PRESENT_VS maps the top of the quad to v = u_uv_rect.y. */
++    p_glUniform4f(s_vf_f_uUvRect, 0.f, 0.f, 1.f, 1.f);
++    p_glBindVertexArray(vf_current_vao());
++    glDrawArrays(GL_TRIANGLES, 0, 3);
++    p_glBindVertexArray(0);
++    p_glUseProgram(0);
++    /* Leave the source texture on the caller's filter expectation (nearest is
++     * the historical default; the plain path re-sets it every draw anyway). */
++    glBindTexture(GL_TEXTURE_2D, tex);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++    s_vf_passes++;
++    s_vf_last_kind = kind;
++    return 1;
++}
++
++void gl_renderer_video_filter_diag(int *last_kind, unsigned *broken_mask,
++                                   uint64_t *passes, uint64_t *fallbacks) {
++    if (last_kind)   *last_kind = s_vf_last_kind;
++    if (broken_mask) *broken_mask = s_vf_broken;
++    if (passes)      *passes = s_vf_passes;
++    if (fallbacks)   *fallbacks = s_vf_fallbacks;
++}
++
++int gl_renderer_request_present_capture(const char *path) {
++    if (!path || !path[0]) return 0;
++    strncpy(s_vf_capture_path, path, sizeof s_vf_capture_path - 1);
++    s_vf_capture_path[sizeof s_vf_capture_path - 1] = 0;
++    s_vf_capture_result = 0;
++    s_vf_capture_pending = 1;
++    return 1;
++}
++
++int gl_renderer_present_capture_result(void) {
++    return s_vf_capture_pending ? 0 : s_vf_capture_result;
++}
++
++/* Companion files of a pending present_capture: the exact source rect the
++ * filter consumed (`<path>.src.png`, native texels, top-down) and, for the
++ * upscalers, the CPU reference of that same input (`<path>.ref.png`) — the
++ * pixel-parity oracle for the shader path. Called from vf_present with the
++ * source texture bound and its real-texel rect resolved. */
++void gl_renderer_present_capture_companions(int on) { s_vf_capture_companions = on ? 1 : 0; }
++
++static void vf_capture_source(GLuint tex, int rx, int ry, int rw, int rh, int kind) {
++    if (!s_vf_capture_pending || !s_vf_capture_companions) return;
++    GLuint fbo = vf_fbo_for_current_context();
++    if (!fbo || rw <= 0 || rh <= 0) return;
++    uint32_t *argb = (uint32_t *)malloc((size_t)rw * rh * sizeof(uint32_t));
++    uint8_t  *rgb  = (uint8_t *)malloc((size_t)rw * rh * 3);
++    if (!argb || !rgb) { free(argb); free(rgb); return; }
++    p_glBindFramebuffer(PSXGL_FRAMEBUFFER, fbo);
++    p_glFramebufferTexture2D(PSXGL_FRAMEBUFFER, PSXGL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
++    glPixelStorei(GL_PACK_ALIGNMENT, 1);
++    glReadPixels(rx, ry, rw, rh, GL_RGB, GL_UNSIGNED_BYTE, rgb);
++    p_glFramebufferTexture2D(PSXGL_FRAMEBUFFER, PSXGL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
++    p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
++    char path[560];
++    snprintf(path, sizeof path, "%s.src.png", s_vf_capture_path);
++    FILE *f = fopen(path, "wb");
++    if (f) { png_write_rgb(f, rgb, (uint32_t)rw, (uint32_t)rh); fclose(f); }
++    const int N = video_filter_scale(kind);
++    if (N > 1) {
++        for (size_t i = 0; i < (size_t)rw * rh; i++)
++            argb[i] = 0xFF000000u | ((uint32_t)rgb[i * 3] << 16) |
++                      ((uint32_t)rgb[i * 3 + 1] << 8) | rgb[i * 3 + 2];
++        uint32_t *out = (uint32_t *)malloc((size_t)rw * N * rh * N * sizeof(uint32_t));
++        uint8_t  *orgb = (uint8_t *)malloc((size_t)rw * N * rh * N * 3);
++        if (out && orgb &&
++            video_filter_apply_cpu(kind, argb, rw, rw, rh, out, rw * N) == N) {
++            for (size_t i = 0; i < (size_t)rw * N * rh * N; i++) {
++                orgb[i * 3]     = (uint8_t)(out[i] >> 16);
++                orgb[i * 3 + 1] = (uint8_t)(out[i] >> 8);
++                orgb[i * 3 + 2] = (uint8_t)out[i];
++            }
++            snprintf(path, sizeof path, "%s.ref.png", s_vf_capture_path);
++            f = fopen(path, "wb");
++            if (f) { png_write_rgb(f, orgb, (uint32_t)(rw * N), (uint32_t)(rh * N)); fclose(f); }
++        }
++        free(out); free(orgb);
++    }
++    free(argb); free(rgb);
++}
++
++/* Read the just-drawn default framebuffer (before OSD / swap) into a PNG. */
++static void vf_capture_drawable_if_pending(void) {
++    if (!s_vf_capture_pending) return;
++    s_vf_capture_pending = 0;
++    int ww = 0, wh = 0;
++    SDL_GL_GetDrawableSize(s_win, &ww, &wh);
++    if (ww < 1 || wh < 1) { s_vf_capture_result = -1; return; }
++    uint8_t *rgb = (uint8_t *)malloc((size_t)ww * wh * 3);
++    uint8_t *row = (uint8_t *)malloc((size_t)ww * 3);
++    if (!rgb || !row) { free(rgb); free(row); s_vf_capture_result = -1; return; }
++    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, 0);
++    glPixelStorei(GL_PACK_ALIGNMENT, 1);
++    glReadPixels(0, 0, ww, wh, GL_RGB, GL_UNSIGNED_BYTE, rgb);
++    /* GL rows are bottom-up; PNG wants top-down. */
++    for (int y = 0; y < wh / 2; y++) {
++        uint8_t *a = rgb + (size_t)y * ww * 3, *b = rgb + (size_t)(wh - 1 - y) * ww * 3;
++        memcpy(row, a, (size_t)ww * 3); memcpy(a, b, (size_t)ww * 3); memcpy(b, row, (size_t)ww * 3);
++    }
++    FILE *f = fopen(s_vf_capture_path, "wb");
++    int ok = 0;
++    if (f) { ok = png_write_rgb(f, rgb, (uint32_t)ww, (uint32_t)wh); fclose(f); }
++    free(rgb); free(row);
++    s_vf_capture_result = ok ? 1 : -1;
++}
++
+ static void present_target_quad(GLuint tex, int tex_w, int tex_h,
+                                 int x, int y, int w, int h, int linear,
+-                                int lx, int ly, int lw, int lh, int v_flip) {
++                                int lx, int ly, int lw, int lh, int v_flip,
++                                int native_w, int native_h) {
+     float u0, v0, u1, v1;
++    /* Opt-in video filter (VF_NONE = the historical path below, untouched).
++     * Only picture-oriented sources are filtered (v_flip=1); a re-presented
++     * drawable capture is already filtered screen content. */
++    if (v_flip && video_filter_get() != VF_NONE &&
++        vf_present(tex, tex_w, tex_h, x, y, w, h, native_w, native_h, lx, ly, lw, lh, v_flip))
++        return;
+     p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
+     glViewport(lx, ly, lw, lh);
+     p_glActiveTexture(PSXGL_TEXTURE0);
+@@ -4035,15 +4468,18 @@ int gl_renderer_present_hold_last(void) {
+         }
+         /* v_flip=0: drawable capture is already screen-oriented. */
+         present_target_quad(s_hold_tex, s_hold_tw, s_hold_th,
+-                            0, 0, s_hold_tw, s_hold_th, 0, lx, ly, lw, lh, 0);
++                            0, 0, s_hold_tw, s_hold_th, 0, lx, ly, lw, lh, 0, 0, 0);
+     } else {
+         if (s_hold_force_4_3)
+             letterbox_rect_aspect(ww, wh, 4, 3, &lx, &ly, &lw, &lh);
+         else
+             letterbox_rect(ww, wh, &lx, &ly, &lw, &lh);
+-        present_target_quad(s_hold_tex, s_hold_tw, s_hold_th,
+-                            0, 0, s_hold_tw, s_hold_th, s_hold_linear,
+-                            lx, ly, lw, lh, 1);
++        {
++            const int S = s_scale > 0 ? s_scale : 1;
++            present_target_quad(s_hold_tex, s_hold_tw, s_hold_th,
++                                0, 0, s_hold_tw, s_hold_th, s_hold_linear,
++                                lx, ly, lw, lh, 1, s_hold_tw / S, s_hold_th / S);
++        }
+         /* Upgrade to drawable after letterboxing once. Live+interp leaves
+          * HOLD_NATIVE (no Swap on main); drawable path is the soak-proven
+          * full-window image (GL without interp). */
+@@ -4104,7 +4540,7 @@ void gl_renderer_present_vram(int disp_x, int disp_y, int w, int h, int linear,
+         return;
+     }
+     present_target_quad(s_hr_tex, VRAM_W, VRAM_H,
+-                        disp_x, disp_y, w, h, linear, lx, ly, lw, lh, 1);
++                        disp_x, disp_y, w, h, linear, lx, ly, lw, lh, 1, w, h);
+     pres_record(GL_PRES_VRAM, disp_x, disp_y, w, h, lx, ly, lw, lh);
+     hold_capture_drawable();
+     latency_ring_mark(LAT_SWAP_BEGIN);
+@@ -4205,7 +4641,8 @@ int gl_renderer_present_wide_fbo(int disp_x, int disp_y, int disp_h, int linear)
+         return 1;
+     }
+     present_target_quad(tex, g_wide_w, VRAM_H,
+-                        0, disp_y, g_wide_w, disp_h, linear, lx, ly, lw, lh, 1);
++                        0, disp_y, g_wide_w, disp_h, linear, lx, ly, lw, lh, 1,
++                        g_wide_w, disp_h);
+     pres_record(GL_PRES_WIDE, disp_x, disp_y, g_wide_w, disp_h, lx, ly, lw, lh);
+     hold_capture_drawable();
+     latency_ring_mark(LAT_SWAP_BEGIN);
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index 9117b59..3f4f497 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -38,6 +38,10 @@ extern "C" void psx_event_step_conservative_env_init(void);
+ #include "gpu_sw_renderer.h"
+ #include "gpu_render.h"
+ #include "gpu_gl_renderer.h"
++#include "video_filter.h"
++#include "png_write.h"
++#include "bug_report.h"
++#include "psx_script.h"
+ #include "gpu_vk_renderer.h"
+ #include "frame_pacing.h"
+ #include "latency_ring.h"
+@@ -319,6 +323,18 @@ SDL_Window* sdl_window = nullptr;
+ }
+ static SDL_Renderer* sdl_renderer;
+ static SDL_Texture*  sdl_texture;
++/* Software-present video filter (video_filter.h): the CPU-filtered frame is
++ * N times the native grid, so it streams through its own texture; sized on
++ * first use for the selected factor. NULL while the filter is off. */
++static SDL_Texture*  sdl_filter_texture = nullptr;
++static int           sdl_filter_texture_n = 0;
++static uint32_t*     sdl_filter_buf = nullptr;
++static size_t        sdl_filter_buf_px = 0;
++/* Software-present capture (debug "present_capture" on the SDL_Renderer path):
++ * the buffer handed to SDL_UpdateTexture — post-filter — dumped as PNG. */
++static char          s_sw_capture_path[512];
++static int           s_sw_capture_pending = 0;
++static int           s_sw_capture_result = 0;
+ /* Per-player input device routing (PSX ports 1 & 2). Seeded from the
+  * [controller] settings the launcher writes; the runtime opens the matching
+  * SDL controller (or uses the keyboard) and feeds each PSX pad slot. */
+@@ -407,6 +423,7 @@ static bool     s_force_present_after_load = false;
+ static int s_sw_hold_valid = 0;
+ static SDL_Rect s_sw_hold_src;
+ static SDL_Rect s_sw_hold_dst;
++static SDL_Texture* s_sw_hold_tex = nullptr;   /* texture the last present drew (filter or plain) */
+ /* After LOADED: optional freeze probe (PSX_POST_LOAD_PROBE=1). Off by default. */
+ static int      s_post_load_probe_enabled = -1; /* -1 = unread env */
+ static int      s_post_load_probe_left = 0;
+@@ -927,6 +944,10 @@ static void savestate_input_guard_arm(void);
+ extern "C" void psx_frontend_on_savestate_notify(int is_load, int slot, int ok) {
+     char buf[64];
+     const int disp = slot + 1;
++    if (!is_load && slot >= SAVESTATE_SLOT_TOTAL) {   /* bug-report path save */
++        bug_report_on_state_saved(ok);
++        return;
++    }
+     if (!is_load && ok)
+         psx_savestate_menu_note_slots_changed();
+     if (is_load && ok)
+@@ -1104,6 +1125,7 @@ static int           g_video_renderer = PSXRecompV4::DEFAULT_VIDEO_RENDERER;
+ static int           g_fullscreen     = 0;  /* tri-state: 0 windowed, 1 borderless (desktop)
+                                               * fullscreen, 2 exclusive fullscreen */
+ static int           g_video_screen   = 0;  /* 0=raw,1=crt,2=composite,3=trinitron */
++static int           g_video_filter   = 0;  /* VideoFilterKind (video_filter.h); 0 = none */
+ static int           g_video_win_w    = 1280; /* window width (height follows aspect) */
+ static bool          g_audio_spu_hq   = false; /* SPU float-shadow (env overrides) */
+ static int           g_audio_freq     = 44100; /* host device request */
+@@ -1246,6 +1268,25 @@ extern "C" int psx_mod_set_adaptive_display_aspect(
+     return 1;
+ }
+ 
++/* Mod-selected present-time video filter (video_filter.h). Presentation only:
++ * never touches VRAM, digests or oracle frames. Applied immediately; the
++ * launcher/settings value it overrides is not persisted. */
++extern "C" int psx_mod_set_video_filter(const char* name) {
++    int kind = 0;
++    if (!name || !video_filter_from_name(name, &kind)) {
++        std::fprintf(stderr, "psxrecomp: mod rejected unknown video filter \"%s\"\n",
++                     name ? name : "(null)");
++        return 0;
++    }
++    g_video_filter = kind;
++    video_filter_set(kind);
++    gl_renderer_invalidate_present();
++    std::fprintf(stdout, "psxrecomp: mod selected video filter %s\n",
++                 video_filter_name(kind));
++    return 1;
++}
++
++
+ extern "C" int psx_mod_set_native_vblank_rate(
+     uint32_t frames_per_second) {
+     if (frames_per_second != 0 &&
+@@ -1515,6 +1556,92 @@ static bool          g_vk_active = false;    /* Vulkan context live -> VK presen
+  * keeps CPU VRAM current every frame (so screenshots reflect the screen). */
+ static int           g_gl_fbo_present = 1;
+ 
++/* Debug-server "present_capture": route to the live present path. GL captures
++ * the drawable (post-filter, pre-OSD) plus source/reference companions; the
++ * software present dumps the exact buffer it uploads to SDL. */
++extern "C" int psx_present_request_capture(const char* path) {
++    if (!path || !path[0]) return 0;
++    if (g_gl_active) return gl_renderer_request_present_capture(path);
++    std::strncpy(s_sw_capture_path, path, sizeof s_sw_capture_path - 1);
++    s_sw_capture_path[sizeof s_sw_capture_path - 1] = 0;
++    s_sw_capture_result = 0;
++    s_sw_capture_pending = 1;
++    return 1;
++}
++extern "C" int psx_present_capture_result(void) {
++    if (g_gl_active) return gl_renderer_present_capture_result();
++    return s_sw_capture_pending ? 0 : s_sw_capture_result;
++}
++
++/* Headless present capture: scanout -> CPU video filter -> PNG (no window).
++ * Same result the software present would upload to SDL. */
++static void headless_capture_present(void) {
++    s_sw_capture_pending = 0;
++    s_sw_capture_result = -1;
++    GpuDisplayInfo di;
++    gpu_get_display_info(&di);
++    if (di.disabled || di.width == 0 || di.height == 0) return;
++    const int w = (int)(di.width > 640 ? 640 : di.width);
++    const int h = (int)(di.height > 512 ? 512 : di.height);
++    std::vector<uint32_t> src((size_t)w * h);
++    for (int y = 0; y < h; y++)
++        for (int x = 0; x < w; x++)
++            src[(size_t)y * w + x] = gpu_display_pixel_argb(&di, (uint32_t)x, (uint32_t)y);
++    const uint32_t* px = src.data();
++    int ow = w, oh = h;
++    std::vector<uint32_t> filtered;
++    const int kind = video_filter_get();
++    const int n = video_filter_cpu_scale(kind);
++    if (kind != VF_NONE && n > 1) {
++        filtered.resize((size_t)w * n * (size_t)h * n);
++        if (video_filter_apply_cpu(kind, px, w, w, h, filtered.data(), w * n) == n) {
++            px = filtered.data(); ow = w * n; oh = h * n;
++        }
++    }
++    std::vector<uint8_t> rgb((size_t)ow * oh * 3);
++    for (size_t i = 0; i < (size_t)ow * oh; i++) {
++        rgb[i * 3] = (uint8_t)(px[i] >> 16); rgb[i * 3 + 1] = (uint8_t)(px[i] >> 8); rgb[i * 3 + 2] = (uint8_t)px[i];
++    }
++    if (FILE* f = std::fopen(s_sw_capture_path, "wb")) {
++        s_sw_capture_result = png_write_rgb(f, rgb.data(), (uint32_t)ow, (uint32_t)oh) ? 1 : -1;
++        std::fclose(f);
++    }
++}
++
++extern "C" int g_turbo_loads_enabled;
++/* Host half of a bug-report bundle (bug_report.h): the settings and window
++ * facts main.cpp owns, as a JSON object body. */
++extern "C" int psx_host_report_json(char* buf, int cap) {
++    if (!buf || cap <= 0) return 0;
++    int ww = 0, wh = 0, dw = 0, dh = 0;
++    if (sdl_window) {
++        SDL_GetWindowSize(sdl_window, &ww, &wh);
++        SDL_GL_GetDrawableSize(sdl_window, &dw, &dh);
++    }
++    const char* rend = g_gl_active ? "opengl" : (g_vk_active ? "vulkan" : "software");
++    return std::snprintf(buf, (size_t)cap,
++        "\"platform\":\"%s\",\"build\":\"%s\",\"renderer\":\"%s\","
++        "\"supersampling\":%d,\"antialiasing\":%s,\"texture_filter\":\"%s\","
++        "\"screen_kind\":%d,\"video_filter\":\"%s\",\"aspect\":\"%d:%d\","
++        "\"widescreen_engaged\":%s,\"fullscreen_mode\":%d,"
++        "\"window\":[%d,%d],\"drawable\":[%d,%d],\"vsync\":%d,"
++        "\"frame_interpolation\":%s,\"low_latency_input\":%s,"
++        "\"bios_hle\":%s,\"auto_skip_fmv\":%s,\"turbo_loads\":%s",
++        SDL_GetPlatform(),
++#if defined(NDEBUG)
++        "release",
++#else
++        "debug",
++#endif
++        rend, g_video_scale, g_video_aa ? "true" : "false",
++        g_video_texfilter ? "bilinear" : "nearest", g_video_screen,
++        video_filter_name(video_filter_get()), g_video_aspect_num, g_video_aspect_den,
++        g_ws_engaged ? "true" : "false", g_fullscreen, ww, wh, dw, dh, g_video_vsync,
++        g_frame_interpolation ? "true" : "false", g_low_latency_input ? "true" : "false",
++        psx_bios_hle_enabled() ? "true" : "false", g_auto_skip_fmv ? "true" : "false",
++        g_turbo_loads_enabled ? "true" : "false");
++}
++
+ /* Cleared on lobby soft-return so rematch can re-arm CPU-auth GPU lock. */
+ static int s_netplay_sw_gpu_locked;
+ /* Netplay + user OpenGL: dual-raster (SW@1× authority + GL@Nx present) or
+@@ -2475,6 +2602,8 @@ static void teardown_game_session_keep_lobby(void) {
+         gl_renderer_shutdown();
+         g_gl_active = false;
+     }
++    if (sdl_filter_texture) { SDL_DestroyTexture(sdl_filter_texture); sdl_filter_texture = nullptr; }
++    sdl_filter_texture_n = 0; s_sw_hold_tex = nullptr;
+     if (sdl_texture) { SDL_DestroyTexture(sdl_texture); sdl_texture = nullptr; }
+     if (sdl_renderer) { SDL_DestroyRenderer(sdl_renderer); sdl_renderer = nullptr; }
+     if (sdl_window) { SDL_DestroyWindow(sdl_window); sdl_window = nullptr; }
+@@ -4962,7 +5091,8 @@ static void netplay_hold_last_present_tick(void) {
+     } else if (!g_vk_active && sdl_renderer && sdl_texture && s_sw_hold_valid) {
+         SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
+         SDL_RenderClear(sdl_renderer);
+-        SDL_RenderCopy(sdl_renderer, sdl_texture, &s_sw_hold_src, &s_sw_hold_dst);
++        SDL_RenderCopy(sdl_renderer, s_sw_hold_tex ? s_sw_hold_tex : sdl_texture,
++                       &s_sw_hold_src, &s_sw_hold_dst);
+         host_osd_draw_sdl(sdl_renderer);
+         SDL_RenderPresent(sdl_renderer);
+         did = 1;
+@@ -5305,11 +5435,18 @@ static int savestate_menu_slot = 0;
+ static int savestate_menu_ignore_toggle_release = 0;
+ static SDL_Keycode savestate_menu_open_key = 0;
+ 
++/* Pending confirmation: 0 none, 1 save, 2 load. S and L are adjacent keys and
++ * both actions are destructive in opposite directions (clobber a save vs throw
++ * away play), so neither fires on a single keystroke. */
++static int savestate_menu_confirm = 0;
++
+ static void savestate_menu_sync_overlay(void) {
+     psx_savestate_menu_set_state(savestate_menu_open, savestate_menu_slot);
++    psx_savestate_menu_set_confirm(savestate_menu_open ? savestate_menu_confirm : 0);
+ }
+ 
+ static void savestate_menu_close(void) {
++    savestate_menu_confirm = 0;
+     savestate_menu_open = 0;
+     savestate_menu_sync_overlay();
+     host_osd_push("Save states closed", 800);
+@@ -5328,6 +5465,263 @@ static void savestate_menu_toggle(SDL_Keycode opened_by_key) {
+     savestate_menu_sync_overlay();
+ }
+ 
++/* ---- system menu (ESC) -------------------------------------------------
++ * Resume / save states / rewind / fullscreen / volume / FPS / filter /
++ * restart / quit. Shares the save-state overlay panel, so it needs no new
++ * compositing path in the GL, Vulkan or software renderers.
++ *
++ * Every entry here is something the runtime already exposes as a hotkey or a
++ * config value; the menu exists so a player who launched the game directly does
++ * not have to know the hotkeys, and so the video filter can be compared live
++ * instead of by restarting with a different config. */
++enum {
++    SYSM_RESUME = 0,
++    SYSM_SKIP_GOTO,
++    SYSM_SKIP_SET,
++    SYSM_SAVESTATES,
++    SYSM_REWIND,
++    SYSM_FULLSCREEN,
++    SYSM_VOLUME,
++    SYSM_FPS,
++    SYSM_FILTER,
++    SYSM_VIDEO_FILTER,
++    SYSM_RESTART,
++    SYSM_QUIT,
++    SYSM_COUNT
++};
++
++static int  g_sysmenu_open = 0;
++static int  g_sysmenu_sel  = 0;
++static char *g_saved_argv[64];
++static int   g_saved_argc = 0;
++
++static int sysmenu_is_fullscreen(void) {
++    return sdl_window &&
++           (SDL_GetWindowFlags(sdl_window) & SDL_WINDOW_FULLSCREEN) ? 1 : 0;
++}
++
++static void sysmenu_set_fullscreen(int on) {
++    if (!sdl_window) return;
++    if (!on) {
++        SDL_SetWindowFullscreen(sdl_window, 0);
++        return;
++    }
++    /* Same fallback the hotkey uses: a configured mode of "off" still needs
++     * something to switch INTO. */
++    Uint32 target = psx_fullscreen_flag_for_mode(g_fullscreen);
++    if (target == 0) target = SDL_WINDOW_FULLSCREEN_DESKTOP;
++    SDL_SetWindowFullscreen(sdl_window, target);
++}
++
++static void sysmenu_build_rows(char rows[SYSM_COUNT][40]) {
++    const int have_skip = savestate_slot_exists(SAVESTATE_SLOT_SKIP_POINT);
++    snprintf(rows[SYSM_RESUME],     sizeof rows[0], "RESUME");
++    snprintf(rows[SYSM_SKIP_GOTO],  sizeof rows[0], "GO TO SKIP POINT%s",
++             have_skip ? "" : "   (NONE SET)");
++    snprintf(rows[SYSM_SKIP_SET],   sizeof rows[0], "SET SKIP POINT HERE");
++    snprintf(rows[SYSM_SAVESTATES], sizeof rows[0], "SAVE STATES");
++    snprintf(rows[SYSM_REWIND],     sizeof rows[0], "REWIND");
++    snprintf(rows[SYSM_FULLSCREEN], sizeof rows[0], "FULLSCREEN   %s",
++             sysmenu_is_fullscreen() ? "ON" : "OFF");
++    snprintf(rows[SYSM_VOLUME],     sizeof rows[0], "VOLUME       %d%%",
++             host_volume_get());
++    snprintf(rows[SYSM_FPS],        sizeof rows[0], "FPS DISPLAY  %s",
++             fps_telemetry_enabled() ? "ON" : "OFF");
++    snprintf(rows[SYSM_FILTER],     sizeof rows[0], "FILTER       %s",
++             gr_texture_filter() ? "BILINEAR" : "NEAREST");
++    {
++        /* Present-time video filter (video_filter.h): upper-cased label so it
++         * matches the menu's font/case; left/right cycle, Enter advances. */
++        char up[24];
++        const char* lab = video_filter_label(video_filter_get());
++        size_t i = 0;
++        for (; lab[i] && i + 1 < sizeof up; i++)
++            up[i] = (char)((lab[i] >= 'a' && lab[i] <= 'z') ? lab[i] - 32 : lab[i]);
++        up[i] = 0;
++        snprintf(rows[SYSM_VIDEO_FILTER], sizeof rows[0], "VIDEO FILTER %s", up);
++    }
++    snprintf(rows[SYSM_RESTART],    sizeof rows[0], "RESTART GAME");
++    snprintf(rows[SYSM_QUIT],       sizeof rows[0], "QUIT");
++}
++
++static void sysmenu_sync(void) {
++    char rows[SYSM_COUNT][40];
++    const char *ptrs[SYSM_COUNT];
++    sysmenu_build_rows(rows);
++    for (int i = 0; i < SYSM_COUNT; ++i) ptrs[i] = rows[i];
++    psx_system_menu_set_items(g_sysmenu_open, g_sysmenu_sel, ptrs, SYSM_COUNT);
++}
++
++/* The overlay is composited in the present path, not into VRAM, so `screenshot`
++ * cannot see this menu and Wayland blocks synthetic keypresses. Exposing the
++ * rows the menu WOULD draw is the only way to assert its contents (and the live
++ * values in them) from a test. */
++extern "C" int psx_system_menu_debug_rows(char *out, int cap) {
++    char rows[SYSM_COUNT][40];
++    int n = 0;
++    sysmenu_build_rows(rows);
++    for (int i = 0; i < SYSM_COUNT && n < cap - 2; ++i)
++        n += snprintf(out + n, (size_t)(cap - n), "%s%s",
++                      i ? "|" : "", rows[i]);
++    return SYSM_COUNT;
++}
++
++static void sysmenu_quit(void) {
++    psx_crash_trace_set_exit_origin("system_menu_quit");
++    shutdown_runtime();
++    std::exit(0);
++}
++
++extern "C" void psx_frontend_request_quit(int exit_code) {
++    psx_crash_trace_set_exit_origin(exit_code ? "script_fail" : "script_quit");
++    shutdown_runtime();
++    std::exit(exit_code);
++}
++
++/* Re-exec ourselves with the original argv. A full in-place machine reset does
++ * not exist in this runtime, and synthesising one would have to unwind the
++ * recompiled BIOS, the overlay loader and every device — re-exec is the honest
++ * way to get a guaranteed-clean boot. */
++/* Restart the GAME, not the process: restore this session's power-on snapshot.
++ * The machine goes back to boot with the window, audio device and launcher
++ * session all untouched — re-execing instead would tear the process down and
++ * drop the player back at the launcher, which is not what "restart" means here.
++ * Falls back to a re-exec only if no usable snapshot exists (very early in a
++ * session, before the capture point). */
++static void sysmenu_restart(void) {
++    if (savestate_slot_exists(SAVESTATE_SLOT_POWERON) &&
++        savestate_slot_compatible(SAVESTATE_SLOT_POWERON, NULL, 0) &&
++        savestate_request_load(SAVESTATE_SLOT_POWERON)) {
++        host_osd_push("Restarting", 1200);
++        return;
++    }
++    host_osd_push("Restart unavailable yet", 1800);
++}
++
++static void sysmenu_close(void) {
++    g_sysmenu_open = 0;
++    sysmenu_sync();
++}
++
++/* delta: -1 left, +1 right, 0 = Enter. Rows that are actions ignore left/right. */
++static void persist_video_filter_setting(int kind);   /* defined with the settings path */
++static void sysmenu_activate(int delta) {
++    switch (g_sysmenu_sel) {
++    case SYSM_RESUME:
++        if (delta == 0) sysmenu_close();
++        break;
++    /* Skip point: a reserved snapshot outside the player's 12 slots. Take it at
++     * the title (or the stage select) once, then a later run jumps straight
++     * there instead of sitting through the intro. Deliberately manual — it is
++     * never applied at boot, so it can't silently change how the game starts. */
++    case SYSM_SKIP_GOTO:
++        if (delta == 0) {
++            if (!savestate_slot_exists(SAVESTATE_SLOT_SKIP_POINT)) {
++                host_osd_push("No skip point set", 1500);
++            } else {
++                char why[96];
++                if (!savestate_slot_compatible(SAVESTATE_SLOT_SKIP_POINT,
++                                               why, sizeof why)) {
++                    /* Stale after a rebuild: say so instead of restoring a state
++                     * this binary cannot honour. */
++                    host_osd_push("Skip point is from another build", 2500);
++                } else {
++                    sysmenu_close();
++                    savestate_request_load(SAVESTATE_SLOT_SKIP_POINT);
++                }
++            }
++        }
++        break;
++    case SYSM_SKIP_SET:
++        if (delta == 0) {
++            sysmenu_close();
++            savestate_request_save(SAVESTATE_SLOT_SKIP_POINT);
++            host_osd_push("Skip point set", 1500);
++        }
++        break;
++    case SYSM_SAVESTATES:
++        if (delta == 0) { sysmenu_close(); savestate_menu_toggle(0); }
++        break;
++    case SYSM_REWIND:
++        if (delta == 0) { sysmenu_close(); psx_rewind_toggle(); }
++        break;
++    case SYSM_FULLSCREEN:
++        sysmenu_set_fullscreen(!sysmenu_is_fullscreen());
++        sysmenu_sync();
++        break;
++    case SYSM_VOLUME:
++        host_volume_adjust(delta == 0 ? +5 : delta * 5);
++        sysmenu_sync();
++        break;
++    case SYSM_FPS:
++        fps_telemetry_toggle();
++        sysmenu_sync();
++        break;
++    case SYSM_FILTER:
++        g_video_texfilter = gr_texture_filter() ? 0 : 1;
++        gr_set_texture_filter(g_video_texfilter);
++        sysmenu_sync();
++        break;
++    case SYSM_VIDEO_FILTER: {
++        int k = video_filter_get() + (delta < 0 ? -1 : 1);
++        if (k < 0) k = VF_COUNT - 1;
++        if (k >= VF_COUNT) k = 0;
++        g_video_filter = k;
++        video_filter_set(k);
++        gl_renderer_invalidate_present();
++        persist_video_filter_setting(k);
++        sysmenu_sync();
++        break;
++    }
++    case SYSM_RESTART:
++        if (delta == 0) sysmenu_restart();
++        break;
++    case SYSM_QUIT:
++        if (delta == 0) sysmenu_quit();
++        break;
++    default:
++        break;
++    }
++}
++
++/* Returns 1 when the key was consumed. While the menu is open it swallows every
++ * key, so stray input cannot reach the game behind it. */
++static int system_menu_handle_key(SDL_Keycode key) {
++    if (!g_sysmenu_open) {
++        if (key != SDLK_ESCAPE) return 0;
++        if (savestate_menu_open || psx_rewind_is_open()) return 0;
++        g_sysmenu_open = 1;
++        g_sysmenu_sel = 0;
++        sysmenu_sync();
++        return 1;
++    }
++    switch (key) {
++    case SDLK_ESCAPE:
++        sysmenu_close();
++        return 1;
++    case SDLK_UP:
++        g_sysmenu_sel = (g_sysmenu_sel + SYSM_COUNT - 1) % SYSM_COUNT;
++        sysmenu_sync();
++        return 1;
++    case SDLK_DOWN:
++        g_sysmenu_sel = (g_sysmenu_sel + 1) % SYSM_COUNT;
++        sysmenu_sync();
++        return 1;
++    case SDLK_LEFT:
++        sysmenu_activate(-1);
++        return 1;
++    case SDLK_RIGHT:
++        sysmenu_activate(+1);
++        return 1;
++    case SDLK_RETURN:
++    case SDLK_SPACE:
++        sysmenu_activate(0);
++        return 1;
++    default:
++        return 1;
++    }
++}
++
+ static void savestate_menu_move(int delta) {
+     savestate_menu_slot += delta;
+     while (savestate_menu_slot < 0)
+@@ -5363,11 +5757,32 @@ static int savestate_submit_slot(int slot, int save) {
+     return 1;
+ }
+ 
++/* Arm the confirmation instead of acting. A load from an EMPTY slot is rejected
++ * up front — there is nothing to confirm, and the "Slot N is empty" toast is
++ * more useful than a prompt. */
++static void savestate_menu_request(int save) {
++    if (!save && !savestate_slot_exists(savestate_menu_slot)) {
++        char msg[32];
++        snprintf(msg, sizeof(msg), "Slot %d is empty", savestate_menu_slot + 1);
++        host_osd_push(msg, 1200);
++        return;
++    }
++    savestate_menu_confirm = save ? 1 : 2;
++    savestate_menu_sync_overlay();
++}
++
++static void savestate_menu_cancel_confirm(void) {
++    if (!savestate_menu_confirm) return;
++    savestate_menu_confirm = 0;
++    savestate_menu_sync_overlay();
++}
++
+ static void savestate_menu_submit(int save) {
++    savestate_menu_confirm = 0;
+     if (savestate_submit_slot(savestate_menu_slot, save) && savestate_menu_open) {
+         savestate_menu_open = 0;
+-        savestate_menu_sync_overlay();
+     }
++    savestate_menu_sync_overlay();
+ }
+ 
+ static int savestate_menu_slot_from_key(SDL_Keycode key) {
+@@ -5388,6 +5803,17 @@ static void savestate_menu_handle_key(SDL_Keycode key, int mod, int repeat) {
+         return;
+     if (savestate_menu_open_key && key == savestate_menu_open_key)
+         return;
++    /* While a confirmation is up it owns the keyboard: only yes/no. Changing the
++     * slot underneath a "SAVE TO SLOT 3?" prompt would be the exact mistake this
++     * is here to prevent. */
++    if (savestate_menu_confirm) {
++        if (key == SDLK_RETURN || key == SDLK_SPACE || key == SDLK_y) {
++            savestate_menu_submit(savestate_menu_confirm == 1);
++        } else {
++            savestate_menu_cancel_confirm();
++        }
++        return;
++    }
+     slot = savestate_menu_slot_from_key(key);
+     if (slot >= 0) {
+         savestate_menu_slot = slot;
+@@ -5402,11 +5828,11 @@ static void savestate_menu_handle_key(SDL_Keycode key, int mod, int repeat) {
+     } else if (key == SDLK_RIGHT || key == SDLK_DOWN) {
+         savestate_menu_move(+1);
+     } else if (key == SDLK_s) {
+-        savestate_menu_submit(1);
++        savestate_menu_request(1);
+     } else if (key == SDLK_l) {
+-        savestate_menu_submit(0);
++        savestate_menu_request(0);
+     } else if (key == SDLK_RETURN || key == SDLK_SPACE) {
+-        savestate_menu_submit((mod & KMOD_SHIFT) != 0);
++        savestate_menu_request((mod & KMOD_SHIFT) != 0);
+     }
+ }
+ 
+@@ -5446,12 +5872,21 @@ static void savestate_menu_poll_nav(uint32_t now_ms) {
+     }
+     prev_toggle = toggle;
+ 
+-    if (load && !prev_load)
+-        savestate_menu_submit(0);
+-    if (save && !prev_save)
+-        savestate_menu_submit(1);
+-    if (cancel && !prev_cancel)
+-        savestate_menu_close();
++    /* Pad goes through the same confirmation as the keyboard: A and X are just as
++     * easy to mix up as S and L. While a prompt is up, A confirms and X cancels. */
++    if (savestate_menu_confirm) {
++        if (load && !prev_load)
++            savestate_menu_submit(savestate_menu_confirm == 1);
++        else if ((save && !prev_save) || (cancel && !prev_cancel))
++            savestate_menu_cancel_confirm();
++    } else {
++        if (load && !prev_load)
++            savestate_menu_request(0);
++        if (save && !prev_save)
++            savestate_menu_request(1);
++        if (cancel && !prev_cancel)
++            savestate_menu_close();
++    }
+     prev_load = load;
+     prev_save = save;
+     prev_cancel = cancel;
+@@ -5545,8 +5980,8 @@ static void rewind_pause_present(void) {
+         SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
+         SDL_RenderClear(sdl_renderer);
+         if (sdl_texture && s_sw_hold_valid)
+-            SDL_RenderCopy(sdl_renderer, sdl_texture, &s_sw_hold_src,
+-                           &s_sw_hold_dst);
++            SDL_RenderCopy(sdl_renderer, s_sw_hold_tex ? s_sw_hold_tex : sdl_texture,
++                           &s_sw_hold_src, &s_sw_hold_dst);
+         host_osd_draw_sdl(sdl_renderer);
+         SDL_RenderPresent(sdl_renderer);
+     }
+@@ -5667,12 +6102,15 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+     /* Check debug server input override. */
+     int override = debug_server_get_input_override();
+ #else
+-    /* Production: skip debug server. Still need to advance frame counter
+-     * locally so anything else that reads it continues to work. */
++    /* Production: no listener. Still advance the frame counter locally, and
++     * still honour the input override — the built-in session script
++     * (psx_script.c) drives "press" through the same handler in release. */
+     extern uint64_t s_frame_count;
+     s_frame_count++;
+-    int override = -1;
++    int override = debug_server_get_input_override();
+ #endif
++    /* Built-in session script: one step per vblank at this safe point. */
++    psx_script_poll();
+ 
+     runtime_perf_frame_begin();
+     RuntimePerfFrameScope runtime_perf_frame_scope;
+@@ -5830,7 +6268,10 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+                     netplay_soft_exit("netplay_escape");
+                     return ep;
+                 }
+-                if (!key_repeat &&
++                if (!key_repeat && system_menu_handle_key(key)) {
++                    /* consumed by the ESC system menu */
++                }
++                else if (!key_repeat &&
+                     host_keymap_match(HOST_KEYMAP_REWIND, (int)key, (int)mod)) {
+                     psx_rewind_toggle();
+                 }
+@@ -5849,6 +6290,12 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+                                            (int)mod)) {
+                     fps_telemetry_toggle();
+                 }
++                else if (!key_repeat &&
++                         host_keymap_match(HOST_KEYMAP_BUG_REPORT, (int)key,
++                                           (int)mod)) {
++                    if (!bug_report_capture("hotkey"))
++                        host_osd_push("Bug report: cannot write bundle", 2500);
++                }
+                 /* Host volume: config.ini [KeyMap] VolumeUp/VolumeDown
+                  * (defaults: keypad +/-). 5% steps; shows right-side bar. */
+                 else if (host_keymap_match(HOST_KEYMAP_VOLUME_UP, (int)key,
+@@ -6013,6 +6460,24 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+      *    entry is touched (via the movie-id byte), so nothing else is disturbed.
+      *  - no table configured (generic): hold START so a movie whose handler polls
+      *    the pad aborts itself (can't reach unskippable movies). */
++    /* Power-on snapshot for the system menu's Restart. Taken a couple of seconds
++     * in — late enough that the machine is past its most volatile setup and a
++     * save is accepted at a safe block boundary, early enough that restoring it
++     * is indistinguishable from a fresh boot. Once per session; never while
++     * another save/load is staged, and never under netplay (where state moves
++     * are host-coordinated). */
++    {
++        static int s_poweron_frames = 0;
++        static int s_poweron_saved  = 0;
++        if (!s_poweron_saved && !psx_netplay_active() &&
++            !psx_selfcheck_resim_active()) {
++            if (++s_poweron_frames > 120 && !savestate_pending()) {
++                if (savestate_request_save(SAVESTATE_SLOT_POWERON))
++                    s_poweron_saved = 1;
++            }
++        }
++    }
++
+     int fmv_skip_active = 0;
+     /* Never inject START / poke movie totals under netplay — host-side skip
+      * forks peers (and stomps SIO after sealed publish during resim). */
+@@ -6059,6 +6524,11 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+ 
+     if (g_headless) {
+         ep.skip_pace = 1;
++        /* Windowless present capture (bug_report screen.png / present_capture):
++         * resolve the scanout the software present would show, run the CPU
++         * video filter on it, and write the PNG — the same buffer contract as
++         * the SDL path minus the window. */
++        if (s_sw_capture_pending) headless_capture_present();
+         return ep;
+     }
+ 
+@@ -6562,6 +7032,54 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+ #ifndef PSX_SDL_NO_RENDER
+     int src_w = (int)present_w * active_scale;
+     int src_h = (int)h * active_scale;
++    /* Present-time video filter on the software (SDL_Renderer) present: the
++     * CPU reference implementation (video_filter.c) expands the native grid
++     * N times into its own staging buffer + streaming texture. GL/VK presents
++     * filter on the GPU inside their own present paths; a supersampled
++     * software present is left alone (its hi-res grid is already smooth).
++     * Any allocation failure simply presents unfiltered. */
++    const uint32_t* present_px = sdl_pixel_buf;
++    SDL_Texture* present_tex = sdl_texture;
++    int vf_n = 1;
++    if (!g_gl_active && !g_vk_active && active_scale == 1 &&
++        video_filter_get() != VF_NONE && src_w > 0 && src_h > 0 && sdl_renderer) {
++        const int kind = video_filter_get();
++        const int n = video_filter_cpu_scale(kind);
++        const size_t cap_px = (size_t)(640 * 4) * (size_t)(512 * 4);
++        const size_t need = (size_t)src_w * n * (size_t)src_h * n;
++        if (n > 1 && need <= cap_px) {
++            if (!sdl_filter_buf) {
++                sdl_filter_buf = (uint32_t*)std::malloc(cap_px * sizeof(uint32_t));
++                sdl_filter_buf_px = sdl_filter_buf ? cap_px : 0;
++            }
++            if (sdl_filter_texture && sdl_filter_texture_n != n) {
++                SDL_DestroyTexture(sdl_filter_texture);
++                sdl_filter_texture = nullptr;
++                sdl_filter_texture_n = 0;
++            }
++            if (!sdl_filter_texture) {
++                sdl_filter_texture = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_ARGB8888,
++                                                       SDL_TEXTUREACCESS_STREAMING,
++                                                       640 * n, 512 * n);
++                sdl_filter_texture_n = sdl_filter_texture ? n : 0;
++            }
++            if (sdl_filter_buf && sdl_filter_texture &&
++                video_filter_apply_cpu(kind, sdl_pixel_buf, src_w, src_w, src_h,
++                                       sdl_filter_buf, src_w * n) == n) {
++                present_px = sdl_filter_buf;
++                present_tex = sdl_filter_texture;
++                vf_n = n;
++                src_w *= n;
++                src_h *= n;
++                /* Final fit: the sharp/scanline/CRT prescales are defined as
++                 * "nearest prescale, then linear"; upscaled art follows the
++                 * player's Linear-filter switch like the plain present. */
++                SDL_SetTextureScaleMode(sdl_filter_texture,
++                                        (video_filter_is_upscaler(kind) && !g_video_aa)
++                                            ? SDL_ScaleModeNearest : SDL_ScaleModeLinear);
++            }
++        }
++    }
+     if (g_gl_active) {
+         /* OpenGL present: upload the active display rect and draw a full-screen
+          * quad. SDL_GL_SwapWindow handles vsync; the wall-clock pacer above
+@@ -6578,14 +7096,31 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+     if (!sdl_renderer || !sdl_texture)
+         return ep;
+     SDL_Rect src = { 0, 0, src_w, src_h };
+-    SDL_UpdateTexture(sdl_texture, &src, sdl_pixel_buf,
++    if (s_sw_capture_pending) {
++        s_sw_capture_pending = 0;
++        s_sw_capture_result = -1;
++        uint8_t* rgb = (uint8_t*)std::malloc((size_t)src_w * src_h * 3);
++        if (rgb) {
++            for (size_t i = 0; i < (size_t)src_w * src_h; i++) {
++                rgb[i * 3]     = (uint8_t)(present_px[i] >> 16);
++                rgb[i * 3 + 1] = (uint8_t)(present_px[i] >> 8);
++                rgb[i * 3 + 2] = (uint8_t)present_px[i];
++            }
++            if (FILE* f = std::fopen(s_sw_capture_path, "wb")) {
++                s_sw_capture_result = png_write_rgb(f, rgb, (uint32_t)src_w, (uint32_t)src_h) ? 1 : -1;
++                std::fclose(f);
++            }
++            std::free(rgb);
++        }
++    }
++    SDL_UpdateTexture(present_tex, &src, present_px,
+                       (int)(src_w * sizeof(uint32_t)));
+     /* Short FMV bands only update [0..src_h). Linear sampling at the bottom
+      * edge blends with uninitialized texels below (X11 SDL backends often
+      * show that as a thin white strip; Wayland may not). Pad one black row
+      * so any residual linear fringe is black, matching the letterbox. */
+     const int tex_scale = netplay_cpu_auth_gpu() ? 1 : g_video_scale;
+-    const int tex_h = 512 * tex_scale;
++    const int tex_h = 512 * tex_scale * vf_n;
+     if (src_w > 0 && src_h > 0 && src_h < tex_h) {
+         static uint32_t s_black_pad[640 * 4]; /* covers g_video_scale <= 4 */
+         const int pad_cap = (int)(sizeof(s_black_pad) / sizeof(s_black_pad[0]));
+@@ -6593,7 +7128,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+         for (int i = 0; i < pad_w; i++)
+             s_black_pad[i] = 0xFF000000u;
+         SDL_Rect pad = { 0, src_h, pad_w, 1 };
+-        SDL_UpdateTexture(sdl_texture, &pad, s_black_pad,
++        SDL_UpdateTexture(present_tex, &pad, s_black_pad,
+                           (int)(pad_w * sizeof(uint32_t)));
+     }
+ 
+@@ -6628,11 +7163,12 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+      * bands flashed as a bright strip on some X11 SDL drivers. */
+     SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
+     SDL_RenderClear(sdl_renderer);
+-    SDL_RenderCopy(sdl_renderer, sdl_texture, &src, &dst);
++    SDL_RenderCopy(sdl_renderer, present_tex, &src, &dst);
+     host_osd_draw_sdl(sdl_renderer);
+     /* §33: remember active rect for resim hold-last (not full 640x512). */
+     s_sw_hold_src = src;
+     s_sw_hold_dst = dst;
++    s_sw_hold_tex = present_tex;
+     s_sw_hold_valid = 1;
+ 
+     /* Vsync self-heal. The renderer is created with PRESENTVSYNC for
+@@ -8541,6 +9077,21 @@ namespace {
+         PSXRecompV4::save_user_settings(g_lnch_settings_path, settings);
+     }
+ 
++}  // namespace (reopened below)
++
++/* ESC-menu video filter change: persist like the launcher does, so the pick
++ * survives a restart. Silent when no settings.toml path is known. */
++static void persist_video_filter_setting(int kind) {
++    if (g_lnch_settings_path.empty()) return;
++    PSXRecompV4::UserSettings settings =
++        PSXRecompV4::load_user_settings(g_lnch_settings_path);
++    if (settings.parse_error) return;
++    settings.video_filter = video_filter_name(kind);
++    settings.has_video_filter = true;
++    (void)PSXRecompV4::save_user_settings(g_lnch_settings_path, settings);
++}
++
++namespace {
+     void ae_np_set_lobby_url(void*, const char* url) {
+         g_lnch_lobby_url = url && url[0] ? url : psx_lobby_default_url();
+         ae_np_save_identity(nullptr, g_lnch_lobby_url.c_str());
+@@ -10011,6 +10562,17 @@ namespace {
+         gi->has_turbo_loads = turbo_loads_offered_b ? 1 : 0;
+         gi->has_geometry_precision = 1;
+         gi->has_rewind_depth = 1;
++#if defined(RECOMP_LAUNCHER_HAS_VIDEO_FILTER)
++        /* Present-time video filter cycle: the runtime owns the vocabulary
++         * (video_filter.h kinds, in enum order, index == kind). */
++        {
++            static const char* labels[VF_COUNT];
++            for (int k = 0; k < VF_COUNT; k++) labels[k] = video_filter_label(k);
++            gi->has_video_filter = 1;
++            gi->video_filter_names = labels;
++            gi->video_filter_count = VF_COUNT;
++        }
++#endif
+         if (language_labels && num_languages > 0) {
+             gi->language_labels = language_labels;
+             gi->num_languages = num_languages;
+@@ -10047,6 +10609,10 @@ namespace {
+ #endif
+ 
+ int main(int argc, char** argv) {
++    /* Kept for the ESC menu's Restart, which re-execs this process. */
++    g_saved_argc = argc < 63 ? argc : 63;
++    for (int i = 0; i < g_saved_argc; ++i) g_saved_argv[i] = argv[i];
++    g_saved_argv[g_saved_argc] = nullptr;
+     /* Force line-buffered output so messages appear even if killed. */
+     std::setvbuf(stdout, nullptr, _IOLBF, 0);
+     std::setvbuf(stderr, nullptr, _IOLBF, 0);
+@@ -10140,6 +10706,10 @@ int main(int argc, char** argv) {
+         } else if (std::strcmp(argv[i], "--headless") == 0) {
+             g_headless = 1;
+             force_no_launcher = true;
++        } else if (std::strcmp(argv[i], "--script") == 0 && i + 1 < argc) {
++            psx_script_set(argv[++i]);
++        } else if (std::strcmp(argv[i], "--script-file") == 0 && i + 1 < argc) {
++            psx_script_set_file(argv[++i]);
+         } else if (std::strcmp(argv[i], "--netplay") == 0) {
+             net_cfg.enabled = 1;
+         } else if (std::strcmp(argv[i], "--net-slot") == 0 && i + 1 < argc) {
+@@ -10182,6 +10752,9 @@ int main(int argc, char** argv) {
+             force_no_launcher = true;
+         }
+     }
++    (void)psx_script_init_from_env();
++    /* A script implies no launcher: it drives the session itself. */
++    if (psx_script_active()) force_no_launcher = true;
+ 
+     std::string default_game_config_storage;
+     if (!game_config_path) {
+@@ -10378,6 +10951,15 @@ int main(int argc, char** argv) {
+                 gc.runtime.video_perspective_texturing ? 1 : 0;
+             g_video_renderer   = gc.runtime.video_renderer;
+             g_video_screen     = gc.runtime.video_screen_kind;
++            if (!gc.runtime.video_filter.empty()) {
++                int k = 0;
++                if (video_filter_from_name(gc.runtime.video_filter.c_str(), &k))
++                    g_video_filter = k;
++                else
++                    std::fprintf(stdout,
++                                 "psxrecomp: [video] filter \"%s\" is not a known filter — ignored\n",
++                                 gc.runtime.video_filter.c_str());
++            }
+             g_video_aspect_num = gc.runtime.video_aspect_num;
+             g_video_aspect_den = gc.runtime.video_aspect_den;
+             g_low_latency_input = gc.runtime.video_low_latency_input ? 1 : 0;
+@@ -10733,6 +11315,10 @@ int main(int argc, char** argv) {
+         if (us.has_perspective_texturing)
+             g_video_perspective_texturing = us.perspective_texturing ? 1 : 0;
+         if (us.has_screen_kind)    g_video_screen    = us.screen_kind;
++        if (us.has_video_filter) {
++            int k = 0;
++            if (video_filter_from_name(us.video_filter.c_str(), &k)) g_video_filter = k;
++        }
+         if (us.has_auto_skip_fmv)  g_auto_skip_fmv   = us.auto_skip_fmv ? 1 : 0;
+         /* turbo_loads is deliberately NOT restored from settings.toml. It is a
+          * write-only latch: the launcher stopped drawing a Turbo loads row when
+@@ -10890,6 +11476,11 @@ int main(int argc, char** argv) {
+      * PSX_FRAME_INTERPOLATION=0/1; PSX_FRAME_INTERPOLATION_FPS=0|90+. */
+     if (const char *e = std::getenv("PSX_LOW_LATENCY_INPUT")) g_low_latency_input = atoi(e) ? 1 : 0;
+     if (const char *e = std::getenv("PSX_VSYNC"))             g_video_vsync       = atoi(e);
++    if (const char *e = std::getenv("PSX_VIDEO_FILTER")) {
++        int k = 0;
++        if (video_filter_from_name(e, &k)) g_video_filter = k;
++        else std::fprintf(stdout, "psxrecomp: PSX_VIDEO_FILTER=\"%s\" is not a known filter — ignored\n", e);
++    }
+     if (const char *e = std::getenv("PSX_SMOOTH_60FPS"))
+         psx_smooth_60fps_set(atoi(e) ? 1 : 0);
+     if (const char *e = std::getenv("PSX_FRAME_INTERPOLATION"))
+@@ -11159,6 +11750,7 @@ int main(int argc, char** argv) {
+             seed.perspective_texturing = (g_video_perspective_texturing != 0);
+             seed.has_perspective_texturing = true;
+             seed.screen_kind = g_video_screen;            seed.has_screen_kind = true;
++            seed.video_filter = video_filter_name(g_video_filter); seed.has_video_filter = true;
+             seed.auto_skip_fmv = (g_auto_skip_fmv != 0);
+             seed.has_auto_skip_fmv = skip_fmv_offered;
+             seed.turbo_loads = (g_turbo_loads_enabled != 0);
+@@ -11329,6 +11921,9 @@ int main(int argc, char** argv) {
+             ls.geometry_correction   = seed.geometry_correction ? 1 : 0;
+             ls.perspective_texturing = seed.perspective_texturing ? 1 : 0;
+             ls.screen_kind        = seed.screen_kind;
++#if defined(RECOMP_LAUNCHER_HAS_VIDEO_FILTER)
++            ls.video_filter       = g_video_filter;
++#endif
+             ls.frame_interp       = seed.frame_interpolation ? 1 : 0;
+             ls.frame_interp_fps   = seed.frame_interpolation_fps;
+             ls.spu_hq             = seed.spu_hq ? 1 : 0;
+@@ -11564,6 +12159,11 @@ int main(int argc, char** argv) {
+                 seed.perspective_texturing = ls.perspective_texturing != 0;
+                 seed.has_perspective_texturing = true;
+                 seed.screen_kind           = ls.screen_kind;           seed.has_screen_kind           = true;
++#if defined(RECOMP_LAUNCHER_HAS_VIDEO_FILTER)
++                g_video_filter = (ls.video_filter >= 0 && ls.video_filter < VF_COUNT)
++                                     ? ls.video_filter : VF_NONE;
++                seed.video_filter = video_filter_name(g_video_filter); seed.has_video_filter = true;
++#endif
+                 seed.frame_interpolation   = ls.frame_interp != 0;     seed.has_frame_interpolation   = true;
+                 seed.frame_interpolation_fps = ls.frame_interp_fps;    seed.has_frame_interpolation_fps = true;
+                 seed.audio_freq            = ls.audio_freq;            seed.has_audio_freq            = true;
+@@ -12139,6 +12739,11 @@ session_reboot:
+     /* Present-time screen-colour model (verified-enhancement LUT). Default raw
+      * is byte-identical; PSX_SCREEN env overrides this at scanout. */
+     gpu_set_screen_kind(g_video_screen);
++    /* Present-time video filter (video_filter.h). Default none = the
++     * historical present path, untouched. */
++    video_filter_set(g_video_filter);
++    if (g_video_filter != VF_NONE)
++        std::fprintf(stdout, "psxrecomp: video filter %s\n", video_filter_name(g_video_filter));
+     if (g_video_scale > 1 || g_video_texfilter)
+         std::fprintf(stdout,
+                      "psxrecomp: supersampling %dx (antialiasing %s, texture filter %s)\n",
+@@ -13073,6 +13678,7 @@ session_reboot:
+     shutdown_runtime();
+     if (g_gl_active) gl_renderer_shutdown();
+     if (g_vk_active) vk_renderer_shutdown();
++    SDL_DestroyTexture(sdl_filter_texture); /* NULL-safe */
+     SDL_DestroyTexture(sdl_texture);   /* NULL-safe in GL mode */
+     SDL_DestroyRenderer(sdl_renderer); /* NULL-safe in GL mode */
+     SDL_DestroyWindow(sdl_window);
+@@ -13122,6 +13728,9 @@ soft_return_lobby:
+         ls.geometry_correction = g_video_geometry_correction ? 1 : 0;
+         ls.perspective_texturing = g_video_perspective_texturing ? 1 : 0;
+         ls.screen_kind = g_video_screen;
++#if defined(RECOMP_LAUNCHER_HAS_VIDEO_FILTER)
++        ls.video_filter = g_video_filter;
++#endif
+         ls.frame_interp = g_frame_interpolation ? 1 : 0;
+         ls.frame_interp_fps = g_frame_interpolation_fps;
+         ls.spu_hq = g_audio_spu_hq ? 1 : 0;
+@@ -13377,6 +13986,11 @@ soft_return_lobby:
+                 us.has_perspective_texturing = true;
+                 us.screen_kind = ls.screen_kind;
+                 us.has_screen_kind = true;
++#if defined(RECOMP_LAUNCHER_HAS_VIDEO_FILTER)
++                us.video_filter = video_filter_name(
++                    (ls.video_filter >= 0 && ls.video_filter < VF_COUNT) ? ls.video_filter : VF_NONE);
++                us.has_video_filter = true;
++#endif
+                 us.frame_interpolation = ls.frame_interp != 0;
+                 us.has_frame_interpolation = true;
+                 us.frame_interpolation_fps = ls.frame_interp_fps;
+@@ -13429,6 +14043,17 @@ soft_return_lobby:
+             g_video_geometry_correction = ls.geometry_correction ? 1 : 0;
+             g_video_perspective_texturing = ls.perspective_texturing ? 1 : 0;
+             g_video_screen = ls.screen_kind;
++#if defined(RECOMP_LAUNCHER_HAS_VIDEO_FILTER)
++            {
++                const int vf = (ls.video_filter >= 0 && ls.video_filter < VF_COUNT)
++                                   ? ls.video_filter : VF_NONE;
++                if (vf != g_video_filter) {
++                    g_video_filter = vf;
++                    video_filter_set(vf);
++                    gl_renderer_invalidate_present();
++                }
++            }
++#endif
+             /* Load acceleration and FMV skipping are mod-owned on PSX, and the
+              * launcher struct these come from was snapshotted BEFORE
+              * mod_runtime_activate_plugins() ran. Applying them here would
+diff --git a/runtime/src/video_filter.c b/runtime/src/video_filter.c
+new file mode 100644
+index 0000000..8642054
+--- /dev/null
++++ b/runtime/src/video_filter.c
+@@ -0,0 +1,668 @@
++/* video_filter.c — CPU reference implementations of the present-time video
++ * filters (see video_filter.h for scope, provenance and the parity contract
++ * with the OpenGL shaders in gpu_gl_renderer.c).
++ *
++ * All pixels are ARGB8888 in host order (0xAARRGGBB). Colour equality is on
++ * the RGB24 payload; alpha is ignored on input and forced to 0xFF on output.
++ * Every neighbourhood fetch is clamped to the source rectangle, so the
++ * filters never read outside [0,w) x [0,h) and the outermost source pixels
++ * simply see themselves repeated — the same rule the shaders apply with
++ * clamp-to-edge texel fetches, which keeps the two paths comparable at the
++ * borders too. */
++
++#include "video_filter.h"
++
++#include <math.h>
++#include <stddef.h>
++#include <stdlib.h>
++#include <string.h>
++
++/* Portable case-insensitive compare (MSVC has no <strings.h>). */
++static int ci_eq(const char* a, const char* b) {
++    for (;; a++, b++) {
++        int ca = (unsigned char)*a, cb = (unsigned char)*b;
++        if (ca >= 'A' && ca <= 'Z') ca += 'a' - 'A';
++        if (cb >= 'A' && cb <= 'Z') cb += 'a' - 'A';
++        if (ca != cb) return 0;
++        if (ca == 0) return 1;
++    }
++}
++
++/* ---- names / metadata --------------------------------------------------- */
++
++typedef struct {
++    const char* name;
++    const char* label;
++    int         scale;      /* upscaler factor (1 = final-pass / none)      */
++} VfInfo;
++
++static const VfInfo s_info[VF_COUNT] = {
++    [VF_NONE]        = { "none",        "None",         1 },
++    [VF_SHARP]       = { "sharp",       "Sharp",        1 },
++    [VF_SCALE2X]     = { "scale2x",     "Scale2x",      2 },
++    [VF_SCALE3X]     = { "scale3x",     "Scale3x",      3 },
++    [VF_SAI2X]       = { "2xsai",       "2xSaI",        2 },
++    [VF_SUPER_SAI2X] = { "super2xsai",  "Super 2xSaI",  2 },
++    [VF_SUPER_EAGLE] = { "supereagle",  "Super Eagle",  2 },
++    [VF_XBR2X]       = { "xbr2x",       "xBR 2x",       2 },
++    [VF_XBR3X]       = { "xbr3x",       "xBR 3x",       3 },
++    [VF_XBR4X]       = { "xbr4x",       "xBR 4x",       4 },
++    [VF_SCANLINES]   = { "scanlines",   "Scanlines",    1 },
++    [VF_CRT]         = { "crt",         "CRT",          1 },
++};
++
++static int vf_valid(int kind) { return kind >= 0 && kind < VF_COUNT; }
++
++const char* video_filter_name(int kind)  { return vf_valid(kind) ? s_info[kind].name  : "none"; }
++const char* video_filter_label(int kind) { return vf_valid(kind) ? s_info[kind].label : "None"; }
++int video_filter_scale(int kind)         { return vf_valid(kind) ? s_info[kind].scale : 1; }
++int video_filter_is_upscaler(int kind)   { return video_filter_scale(kind) > 1; }
++
++int video_filter_from_name(const char* name, int* out) {
++    if (!name || !out) return 0;
++    for (int k = 0; k < VF_COUNT; k++) {
++        if (ci_eq(name, s_info[k].name)) { *out = k; return 1; }
++    }
++    /* Aliases people actually type. */
++    static const struct { const char* alias; int kind; } al[] = {
++        { "off", VF_NONE }, { "raw", VF_NONE }, { "0", VF_NONE },
++        { "sharp-bilinear", VF_SHARP }, { "sharp_bilinear", VF_SHARP },
++        { "pixel-perfect", VF_SHARP },
++        { "epx", VF_SCALE2X }, { "advmame2x", VF_SCALE2X }, { "advmame3x", VF_SCALE3X },
++        { "sai", VF_SAI2X }, { "2xsai", VF_SAI2X }, { "sai2x", VF_SAI2X },
++        { "super-2xsai", VF_SUPER_SAI2X }, { "super_2xsai", VF_SUPER_SAI2X },
++        { "supersai", VF_SUPER_SAI2X },
++        { "super-eagle", VF_SUPER_EAGLE }, { "super_eagle", VF_SUPER_EAGLE },
++        { "eagle", VF_SUPER_EAGLE },
++        { "xbr", VF_XBR2X }, { "xbr-2x", VF_XBR2X }, { "xbr-3x", VF_XBR3X },
++        { "xbr-4x", VF_XBR4X }, { "xbr-lv2", VF_XBR2X },
++        { "scanline", VF_SCANLINES }, { "crt-lottes", VF_CRT },
++    };
++    for (size_t i = 0; i < sizeof al / sizeof al[0]; i++) {
++        if (ci_eq(name, al[i].alias)) { *out = al[i].kind; return 1; }
++    }
++    return 0;
++}
++
++/* ---- runtime selection -------------------------------------------------- */
++
++static volatile int s_kind = VF_NONE;
++
++void video_filter_set(int kind) { s_kind = vf_valid(kind) ? kind : VF_NONE; }
++int  video_filter_get(void)     { return s_kind; }
++
++int video_filter_cpu_scale(int kind) {
++    if (!vf_valid(kind) || kind == VF_NONE) return 1;
++    if (video_filter_is_upscaler(kind)) return video_filter_scale(kind);
++    return VF_SW_PRESCALE;
++}
++
++/* ---- pixel helpers ------------------------------------------------------ */
++
++#define RGB_MASK 0x00FFFFFFu
++#define OPAQUE   0xFF000000u
++
++/* Clamped fetch of the RGB24 payload. */
++static inline uint32_t fetch(const uint32_t* src, int pitch, int w, int h, int x, int y) {
++    if (x < 0) x = 0; else if (x >= w) x = w - 1;
++    if (y < 0) y = 0; else if (y >= h) y = h - 1;
++    return src[(size_t)y * (size_t)pitch + (size_t)x] & RGB_MASK;
++}
++
++/* Per-channel (a+b+1)/2 — round-half-up average, matches a unorm store of
++ * the GPU's float mix(a,b,0.5) on every tie-rounding-up implementation. */
++static inline uint32_t avg2(uint32_t a, uint32_t b) {
++    return ((a & b) + (((a ^ b) & 0xFEFEFEu) >> 1) + ((a ^ b) & 0x010101u)) & RGB_MASK;
++}
++
++/* Per-channel (a+b+c+d+2)/4. Low 2 bits of four channels sum to at most 12
++ * (+2 rounding = 14) which fits below the next channel's field, so the whole
++ * thing can be done in packed 32-bit arithmetic without cross-talk. */
++static inline uint32_t avg4(uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
++    uint32_t hi = ((a >> 2) & 0x3F3F3Fu) + ((b >> 2) & 0x3F3F3Fu) +
++                  ((c >> 2) & 0x3F3F3Fu) + ((d >> 2) & 0x3F3F3Fu);
++    uint32_t lo = (a & 0x030303u) + (b & 0x030303u) + (c & 0x030303u) +
++                  (d & 0x030303u) + 0x020202u;
++    return (hi + ((lo >> 2) & 0x030303u)) & RGB_MASK;
++}
++
++static inline void put(uint32_t* dst, int pitch, int x, int y, uint32_t rgb) {
++    dst[(size_t)y * (size_t)pitch + (size_t)x] = rgb | OPAQUE;
++}
++
++/* ---- nearest prescale (+ scanline mask) — software-present final passes -- */
++
++/* Row weights for one source line expanded to VF_SW_PRESCALE rows, in
++ * 1/256ths. SCANLINES: bright beam, dark gap. CRT: softer beam roll-off. */
++static const uint32_t s_row_w_sharp[VF_SW_PRESCALE]     = { 256, 256, 256 };
++static const uint32_t s_row_w_scanlines[VF_SW_PRESCALE] = { 256, 256, 112 };
++static const uint32_t s_row_w_crt[VF_SW_PRESCALE]       = { 190, 256, 150 };
++
++static inline uint32_t scale_rgb(uint32_t rgb, uint32_t wgt) {
++    if (wgt >= 256) return rgb;
++    uint32_t r = ((rgb >> 16) & 0xFF) * wgt >> 8;
++    uint32_t g = ((rgb >> 8) & 0xFF) * wgt >> 8;
++    uint32_t b = (rgb & 0xFF) * wgt >> 8;
++    return (r << 16) | (g << 8) | b;
++}
++
++static void prescale_rows(const uint32_t* src, int sp, int w, int h,
++                          uint32_t* dst, int dp, const uint32_t* row_w) {
++    const int N = VF_SW_PRESCALE;
++    for (int y = 0; y < h; y++) {
++        const uint32_t* s = src + (size_t)y * (size_t)sp;
++        for (int r = 0; r < N; r++) {
++            uint32_t* d = dst + ((size_t)y * N + r) * (size_t)dp;
++            const uint32_t wgt = row_w[r];
++            for (int x = 0; x < w; x++) {
++                const uint32_t c = scale_rgb(s[x] & RGB_MASK, wgt) | OPAQUE;
++                for (int k = 0; k < N; k++) d[x * N + k] = c;
++            }
++        }
++    }
++}
++
++/* ---- Scale2x / Scale3x (EPX) --------------------------------------------- */
++
++static void scale2x(const uint32_t* src, int sp, int w, int h, uint32_t* dst, int dp) {
++    for (int y = 0; y < h; y++) {
++        for (int x = 0; x < w; x++) {
++            const uint32_t B = fetch(src, sp, w, h, x, y - 1);
++            const uint32_t D = fetch(src, sp, w, h, x - 1, y);
++            const uint32_t E = fetch(src, sp, w, h, x, y);
++            const uint32_t F = fetch(src, sp, w, h, x + 1, y);
++            const uint32_t H = fetch(src, sp, w, h, x, y + 1);
++            uint32_t E0 = E, E1 = E, E2 = E, E3 = E;
++            if (B != H && D != F) {
++                if (D == B) E0 = D;
++                if (B == F) E1 = F;
++                if (D == H) E2 = D;
++                if (H == F) E3 = F;
++            }
++            put(dst, dp, 2 * x,     2 * y,     E0);
++            put(dst, dp, 2 * x + 1, 2 * y,     E1);
++            put(dst, dp, 2 * x,     2 * y + 1, E2);
++            put(dst, dp, 2 * x + 1, 2 * y + 1, E3);
++        }
++    }
++}
++
++static void scale3x(const uint32_t* src, int sp, int w, int h, uint32_t* dst, int dp) {
++    for (int y = 0; y < h; y++) {
++        for (int x = 0; x < w; x++) {
++            const uint32_t A = fetch(src, sp, w, h, x - 1, y - 1);
++            const uint32_t B = fetch(src, sp, w, h, x,     y - 1);
++            const uint32_t C = fetch(src, sp, w, h, x + 1, y - 1);
++            const uint32_t D = fetch(src, sp, w, h, x - 1, y);
++            const uint32_t E = fetch(src, sp, w, h, x,     y);
++            const uint32_t F = fetch(src, sp, w, h, x + 1, y);
++            const uint32_t G = fetch(src, sp, w, h, x - 1, y + 1);
++            const uint32_t H = fetch(src, sp, w, h, x,     y + 1);
++            const uint32_t I = fetch(src, sp, w, h, x + 1, y + 1);
++            uint32_t o[9] = { E, E, E, E, E, E, E, E, E };
++            if (B != H && D != F) {
++                if (D == B) o[0] = D;
++                if ((D == B && E != C) || (B == F && E != A)) o[1] = B;
++                if (B == F) o[2] = F;
++                if ((D == B && E != G) || (D == H && E != A)) o[3] = D;
++                if ((B == F && E != I) || (H == F && E != C)) o[5] = F;
++                if (D == H) o[6] = D;
++                if ((D == H && E != I) || (H == F && E != G)) o[7] = H;
++                if (H == F) o[8] = F;
++            }
++            for (int j = 0; j < 3; j++)
++                for (int i = 0; i < 3; i++)
++                    put(dst, dp, 3 * x + i, 3 * y + j, o[j * 3 + i]);
++        }
++    }
++}
++
++/* ---- 2xSaI family --------------------------------------------------------- */
++
++/* Kreed's vote helpers. GetResult1 == GetResult; GetResult2 is its negation. */
++static inline int get_result(uint32_t A, uint32_t B, uint32_t C, uint32_t D) {
++    int x = 0, y = 0, r = 0;
++    if (A == C) x++; else if (B == C) y++;
++    if (A == D) x++; else if (B == D) y++;
++    if (x <= 1) r++;
++    if (y <= 1) r--;
++    return r;
++}
++
++static void sai2x(const uint32_t* src, int sp, int w, int h, uint32_t* dst, int dp) {
++    for (int y = 0; y < h; y++) {
++        for (int x = 0; x < w; x++) {
++            /*  I E F J
++             *  G A B K
++             *  H C D L
++             *  M N O .   — A is the current pixel (P is unused by the rules). */
++            const uint32_t I = fetch(src, sp, w, h, x - 1, y - 1);
++            const uint32_t E = fetch(src, sp, w, h, x,     y - 1);
++            const uint32_t F = fetch(src, sp, w, h, x + 1, y - 1);
++            const uint32_t J = fetch(src, sp, w, h, x + 2, y - 1);
++            const uint32_t G = fetch(src, sp, w, h, x - 1, y);
++            const uint32_t A = fetch(src, sp, w, h, x,     y);
++            const uint32_t B = fetch(src, sp, w, h, x + 1, y);
++            const uint32_t K = fetch(src, sp, w, h, x + 2, y);
++            const uint32_t H = fetch(src, sp, w, h, x - 1, y + 1);
++            const uint32_t C = fetch(src, sp, w, h, x,     y + 1);
++            const uint32_t D = fetch(src, sp, w, h, x + 1, y + 1);
++            const uint32_t L = fetch(src, sp, w, h, x + 2, y + 1);
++            const uint32_t M = fetch(src, sp, w, h, x - 1, y + 2);
++            const uint32_t N = fetch(src, sp, w, h, x,     y + 2);
++            const uint32_t O = fetch(src, sp, w, h, x + 1, y + 2);
++            uint32_t p0, p1, p2;   /* right, below, diagonal */
++
++            if (A == D && B != C) {
++                if ((A == E && B == L) || (A == C && A == F && B != E && B == J)) p0 = A;
++                else p0 = avg2(A, B);
++                if ((A == G && C == O) || (A == B && A == H && G != C && C == M)) p1 = A;
++                else p1 = avg2(A, C);
++                p2 = A;
++            } else if (B == C && A != D) {
++                if ((B == F && A == H) || (B == E && B == D && A != F && A == I)) p0 = B;
++                else p0 = avg2(A, B);
++                if ((C == H && A == F) || (C == G && C == D && A != H && A == I)) p1 = C;
++                else p1 = avg2(A, C);
++                p2 = B;
++            } else if (A == D && B == C) {
++                if (A == B) {
++                    p0 = p1 = p2 = A;
++                } else {
++                    int r = 0;
++                    p1 = avg2(A, C);
++                    p0 = avg2(A, B);
++                    r += get_result(A, B, G, E);
++                    r -= get_result(B, A, K, F);
++                    r -= get_result(B, A, H, N);
++                    r += get_result(A, B, L, O);
++                    if (r > 0) p2 = A;
++                    else if (r < 0) p2 = B;
++                    else p2 = avg4(A, B, C, D);
++                }
++            } else {
++                p2 = avg4(A, B, C, D);
++                if (A == C && A == F && B != E && B == J) p0 = A;
++                else if (B == E && B == D && A != F && A == I) p0 = B;
++                else p0 = avg2(A, B);
++                if (A == B && A == H && G != C && C == M) p1 = A;
++                else if (C == G && C == D && A != H && A == I) p1 = C;
++                else p1 = avg2(A, C);
++            }
++            put(dst, dp, 2 * x,     2 * y,     A);
++            put(dst, dp, 2 * x + 1, 2 * y,     p0);
++            put(dst, dp, 2 * x,     2 * y + 1, p1);
++            put(dst, dp, 2 * x + 1, 2 * y + 1, p2);
++        }
++    }
++}
++
++/* Shared 4x4 neighbourhood of Super 2xSaI / Super Eagle:
++ *   B0 B1 B2 B3
++ *   c4 c5 c6 S2      c5 is the current pixel.
++ *   c1 c2 c3 S1
++ *   A0 A1 A2 A3 */
++typedef struct {
++    uint32_t B0, B1, B2, B3, c4, c5, c6, S2, c1, c2, c3, S1, A0, A1, A2, A3;
++} SaiNbr;
++
++static inline void sai_nbr(const uint32_t* src, int sp, int w, int h, int x, int y, SaiNbr* n) {
++    n->B0 = fetch(src, sp, w, h, x - 1, y - 1); n->B1 = fetch(src, sp, w, h, x, y - 1);
++    n->B2 = fetch(src, sp, w, h, x + 1, y - 1); n->B3 = fetch(src, sp, w, h, x + 2, y - 1);
++    n->c4 = fetch(src, sp, w, h, x - 1, y);     n->c5 = fetch(src, sp, w, h, x, y);
++    n->c6 = fetch(src, sp, w, h, x + 1, y);     n->S2 = fetch(src, sp, w, h, x + 2, y);
++    n->c1 = fetch(src, sp, w, h, x - 1, y + 1); n->c2 = fetch(src, sp, w, h, x, y + 1);
++    n->c3 = fetch(src, sp, w, h, x + 1, y + 1); n->S1 = fetch(src, sp, w, h, x + 2, y + 1);
++    n->A0 = fetch(src, sp, w, h, x - 1, y + 2); n->A1 = fetch(src, sp, w, h, x, y + 2);
++    n->A2 = fetch(src, sp, w, h, x + 1, y + 2); n->A3 = fetch(src, sp, w, h, x + 2, y + 2);
++}
++
++static void super_sai2x(const uint32_t* src, int sp, int w, int h, uint32_t* dst, int dp) {
++    SaiNbr n;
++    for (int y = 0; y < h; y++) {
++        for (int x = 0; x < w; x++) {
++            sai_nbr(src, sp, w, h, x, y, &n);
++            uint32_t p1a, p1b, p2a, p2b;
++            if (n.c2 == n.c6 && n.c5 != n.c3) {
++                p2b = p1b = n.c2;
++            } else if (n.c5 == n.c3 && n.c2 != n.c6) {
++                p2b = p1b = n.c5;
++            } else if (n.c5 == n.c3 && n.c2 == n.c6) {
++                int r = 0;
++                r += get_result(n.c6, n.c5, n.c1, n.A1);
++                r += get_result(n.c6, n.c5, n.c4, n.B1);
++                r += get_result(n.c6, n.c5, n.A2, n.S1);
++                r += get_result(n.c6, n.c5, n.B2, n.S2);
++                if (r > 0) p2b = p1b = n.c6;
++                else if (r < 0) p2b = p1b = n.c5;
++                else p2b = p1b = avg2(n.c5, n.c6);
++            } else {
++                if (n.c6 == n.c3 && n.c3 == n.A1 && n.c2 != n.A2 && n.c3 != n.A0)
++                    p2b = avg4(n.c3, n.c3, n.c3, n.c2);
++                else if (n.c5 == n.c2 && n.c2 == n.A2 && n.A1 != n.c3 && n.c2 != n.A3)
++                    p2b = avg4(n.c2, n.c2, n.c2, n.c3);
++                else p2b = avg2(n.c2, n.c3);
++
++                if (n.c6 == n.c3 && n.c6 == n.B1 && n.c5 != n.B2 && n.c6 != n.B0)
++                    p1b = avg4(n.c6, n.c6, n.c6, n.c5);
++                else if (n.c5 == n.c2 && n.c5 == n.B2 && n.B1 != n.c6 && n.c5 != n.B3)
++                    p1b = avg4(n.c6, n.c5, n.c5, n.c5);
++                else p1b = avg2(n.c5, n.c6);
++            }
++            if (n.c5 == n.c3 && n.c2 != n.c6 && n.c4 == n.c5 && n.c5 != n.A2)
++                p2a = avg2(n.c2, n.c5);
++            else if (n.c5 == n.c1 && n.c6 == n.c5 && n.c4 != n.c2 && n.c5 != n.A0)
++                p2a = avg2(n.c2, n.c5);
++            else p2a = n.c2;
++
++            if (n.c2 == n.c6 && n.c5 != n.c3 && n.c1 == n.c2 && n.c2 != n.B2)
++                p1a = avg2(n.c2, n.c5);
++            else if (n.c4 == n.c2 && n.c3 == n.c2 && n.c1 != n.c5 && n.c2 != n.B0)
++                p1a = avg2(n.c2, n.c5);
++            else p1a = n.c5;
++
++            put(dst, dp, 2 * x,     2 * y,     p1a);
++            put(dst, dp, 2 * x + 1, 2 * y,     p1b);
++            put(dst, dp, 2 * x,     2 * y + 1, p2a);
++            put(dst, dp, 2 * x + 1, 2 * y + 1, p2b);
++        }
++    }
++}
++
++static void super_eagle(const uint32_t* src, int sp, int w, int h, uint32_t* dst, int dp) {
++    SaiNbr n;
++    for (int y = 0; y < h; y++) {
++        for (int x = 0; x < w; x++) {
++            sai_nbr(src, sp, w, h, x, y, &n);
++            uint32_t p1a, p1b, p2a, p2b;
++            if (n.c2 == n.c6 && n.c5 != n.c3) {
++                p1b = p2a = n.c2;
++                if (n.c1 == n.c2 || n.c6 == n.B2) {
++                    p1a = avg2(n.c2, n.c5);
++                    p1a = avg2(n.c2, p1a);
++                } else p1a = avg2(n.c5, n.c6);
++                if (n.c6 == n.S2 || n.c2 == n.A1) {
++                    p2b = avg2(n.c2, n.c3);
++                    p2b = avg2(n.c2, p2b);
++                } else p2b = avg2(n.c2, n.c3);
++            } else if (n.c5 == n.c3 && n.c2 != n.c6) {
++                p2b = p1a = n.c5;
++                if (n.B1 == n.c5 || n.c3 == n.S1) {
++                    p1b = avg2(n.c5, n.c6);
++                    p1b = avg2(n.c5, p1b);
++                } else p1b = avg2(n.c5, n.c6);
++                if (n.c3 == n.A2 || n.c4 == n.c5) {
++                    p2a = avg2(n.c5, n.c2);
++                    p2a = avg2(n.c5, p2a);
++                } else p2a = avg2(n.c2, n.c3);
++            } else if (n.c5 == n.c3 && n.c2 == n.c6) {
++                int r = 0;
++                r += get_result(n.c6, n.c5, n.c1, n.A1);
++                r += get_result(n.c6, n.c5, n.c4, n.B1);
++                r += get_result(n.c6, n.c5, n.A2, n.S1);
++                r += get_result(n.c6, n.c5, n.B2, n.S2);
++                if (r > 0) {
++                    p1b = p2a = n.c2;
++                    p1a = p2b = avg2(n.c5, n.c6);
++                } else if (r < 0) {
++                    p2b = p1a = n.c5;
++                    p1b = p2a = avg2(n.c5, n.c6);
++                } else {
++                    p2b = p1a = n.c5;
++                    p1b = p2a = n.c2;
++                }
++            } else {
++                p2b = p1a = avg2(n.c2, n.c6);
++                p2b = avg4(n.c3, n.c3, n.c3, p2b);
++                p1a = avg4(n.c5, n.c5, n.c5, p1a);
++                p2a = p1b = avg2(n.c5, n.c2);
++                p2a = avg4(n.c2, n.c2, n.c2, p2a);
++                p1b = avg4(n.c6, n.c6, n.c6, p1b);
++            }
++            put(dst, dp, 2 * x,     2 * y,     p1a);
++            put(dst, dp, 2 * x + 1, 2 * y,     p1b);
++            put(dst, dp, 2 * x,     2 * y + 1, p2a);
++            put(dst, dp, 2 * x + 1, 2 * y + 1, p2b);
++        }
++    }
++}
++
++/* ---- xBR level 2 ---------------------------------------------------------- */
++
++/* Per-output-pixel formulation (Hyllian's xbr-lv2 "smooth" variant): the four
++ * corners of a source pixel are handled as four rotations of one rule set.
++ * Everything that does not depend on the sub-pixel position is computed once
++ * per source pixel (edge flags, pixel-select flags); the per-sub-pixel line
++ * inequalities fx45/fx30/fx60/fx45i depend only on (N, sub_x, sub_y) and are
++ * tabulated once per scale. Colours are float 0..1 (matches the shader),
++ * lumas are on the 0..48 xBR scale. */
++
++typedef struct { float r, g, b; } Rgb;
++
++/* xBR works on colours as float INTEGERS 0..255 (exact), blends with dyadic
++ * weights (multiples of 1/4, see xbr_sub_tables), so res1/res2 and their
++ * distances to E are exact on the CPU and on the GPU alike; only the final
++ * 8-bit store rounds (ties may land either way: the 1-LSB parity slack). */
++static inline Rgb to_rgb(uint32_t c) {
++    Rgb o;
++    o.r = (float)((c >> 16) & 0xFF);
++    o.g = (float)((c >> 8) & 0xFF);
++    o.b = (float)(c & 0xFF);
++    return o;
++}
++/* Integer luma of a packed pixel: 299R + 587G + 114B (Rec.601 weights, the
++ * ones xBR uses), exact in float — see VF_XBR_EQ_THRESHOLD. */
++static inline float luma_px(uint32_t c) {
++    return (float)(((c >> 16) & 0xFF) * 299u + ((c >> 8) & 0xFF) * 587u + (c & 0xFF) * 114u);
++}
++static inline float df(float a, float b) { return fabsf(a - b); }
++static inline int eqf(float a, float b) { return df(a, b) < VF_XBR_EQ_THRESHOLD; }
++static inline float wd(float a, float b, float c, float d, float e, float f, float g, float h) {
++    return df(a, b) + df(a, c) + df(d, e) + df(d, f) + 4.0f * df(g, h);
++}
++static inline Rgb mixc(Rgb a, Rgb b, float t) {
++    Rgb o; o.r = a.r + (b.r - a.r) * t; o.g = a.g + (b.g - a.g) * t; o.b = a.b + (b.b - a.b) * t; return o;
++}
++static inline float c_df(Rgb a, Rgb b) { return fabsf(a.r - b.r) + fabsf(a.g - b.g) + fabsf(a.b - b.b); }
++static inline float clamp01(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
++static inline float clamp255(float v) { return v < 0.f ? 0.f : (v > 255.f ? 255.f : v); }
++static inline uint32_t from_rgb(Rgb c) {
++    int r = (int)(clamp255(c.r) + 0.5f);
++    int g = (int)(clamp255(c.g) + 0.5f);
++    int b = (int)(clamp255(c.b) + 0.5f);
++    return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
++}
++/* Every xBR blend weight is mathematically a multiple of 1/8: the line
++ * inequalities evaluate at sub-pixel centres (s+0.5)/N with delta 1/N, so N
++ * cancels except through the Ci = 1/4 inner offset, which contributes N/8.
++ * Snap the float result to that grid so CPU and GPU agree exactly even where
++ * 1/N is inexact (N=3), and every blend stays exact dyadic arithmetic. */
++static inline float snap_eighth(float v) { return floorf(v * 8.0f + 0.5f) * 0.125f; }
++
++/* Sub-pixel tables: fx45[N][N][4] etc. Filled per call (cheap). */
++typedef struct {
++    float f45[4], f45i[4], f30[4], f60[4];
++} XbrSub;
++
++static void xbr_sub_tables(int N, XbrSub* tab /* N*N entries */) {
++    static const float Ao[4] = { 1.f, -1.f, -1.f,  1.f };
++    static const float Bo[4] = { 1.f,  1.f, -1.f, -1.f };
++    static const float Co[4] = { 1.5f, 0.5f, -0.5f, 0.5f };
++    static const float Ax[4] = { 1.f, -1.f, -1.f,  1.f };
++    static const float Bx[4] = { 0.5f, 2.f, -0.5f, -2.f };
++    static const float Cx[4] = { 1.f,  1.f, -0.5f, 0.f };
++    static const float Ay[4] = { 1.f, -1.f, -1.f,  1.f };
++    static const float By[4] = { 2.f,  0.5f, -2.f, -0.5f };
++    static const float Cy[4] = { 2.f,  0.f, -1.f, 0.5f };
++    const float delta = 1.0f / (float)N;
++    const float deltaL[4] = { 0.5f / N, 1.0f / N, 0.5f / N, 1.0f / N };
++    const float deltaU[4] = { 1.0f / N, 0.5f / N, 1.0f / N, 0.5f / N };
++    for (int sy = 0; sy < N; sy++) {
++        for (int sx = 0; sx < N; sx++) {
++            /* Sub-pixel centre, exactly what fract(uv * size) gives the shader. */
++            const float fpx = ((float)sx + 0.5f) / (float)N;
++            const float fpy = ((float)sy + 0.5f) / (float)N;
++            XbrSub* t = &tab[sy * N + sx];
++            for (int k = 0; k < 4; k++) {
++                const float fx      = Ao[k] * fpy + Bo[k] * fpx;
++                const float fx_left = Ax[k] * fpy + Bx[k] * fpx;
++                const float fx_up   = Ay[k] * fpy + By[k] * fpx;
++                t->f45i[k] = snap_eighth(clamp01((fx + delta - Co[k] - 0.25f) / (2.0f * delta)));
++                t->f45[k]  = snap_eighth(clamp01((fx + delta - Co[k]) / (2.0f * delta)));
++                t->f30[k]  = snap_eighth(clamp01((fx_left + deltaL[k] - Cx[k]) / (2.0f * deltaL[k])));
++                t->f60[k]  = snap_eighth(clamp01((fx_up + deltaU[k] - Cy[k]) / (2.0f * deltaU[k])));
++            }
++        }
++    }
++}
++
++static void xbr_lv2(const uint32_t* src, int sp, int w, int h, uint32_t* dst, int dp, int N) {
++    XbrSub tab[16];   /* N <= 4 */
++    xbr_sub_tables(N, tab);
++
++    /* Luma plane once (every neighbourhood read is a luma read; the RGB of
++     * only five pixels — E and its four edge-neighbours — is needed, and only
++     * where a rule actually fires). */
++    float* Y = (float*)malloc((size_t)w * (size_t)h * sizeof(float));
++    if (!Y) return;
++    for (int y = 0; y < h; y++)
++        for (int x = 0; x < w; x++)
++            Y[(size_t)y * w + x] = luma_px(src[(size_t)y * sp + x]);
++
++#define YROW(yy) (Y + (size_t)((yy) < 0 ? 0 : ((yy) >= h ? h - 1 : (yy))) * (size_t)w)
++#define CX(xx)   ((xx) < 0 ? 0 : ((xx) >= w ? w - 1 : (xx)))
++
++    for (int y = 0; y < h; y++) {
++        const float* r_2 = YROW(y - 2);
++        const float* r_1 = YROW(y - 1);
++        const float* r0  = YROW(y);
++        const float* r1  = YROW(y + 1);
++        const float* r2  = YROW(y + 2);
++        for (int x = 0; x < w; x++) {
++            const int xm2 = CX(x - 2), xm1 = CX(x - 1), xp1 = CX(x + 1), xp2 = CX(x + 2);
++            /*      A1 B1 C1
++             *   A0 A  B  C  C4
++             *   D0 D  E  F  F4
++             *   G0 G  H  I  I4
++             *      G5 H5 I5              */
++            const float yA = r_1[xm1], yB = r_1[x], yC = r_1[xp1];
++            const float yD = r0[xm1],  e  = r0[x],  yF = r0[xp1];
++            const float yG = r1[xm1],  yH = r1[x],  yI = r1[xp1];
++            const float yA1 = r_2[xm1], yB1 = r_2[x], yC1 = r_2[xp1];
++            const float yA0 = r_1[xm2], yD0 = r0[xm2], yG0 = r1[xm2];
++            const float yC4 = r_1[xp2], yF4 = r0[xp2], yI4 = r1[xp2];
++            const float yG5 = r2[xm1],  yH5 = r2[x],  yI5 = r2[xp1];
++
++            /* Rotation vectors (component k = corner k: BR, TR, TL, BL). */
++            const float b[4]  = { yB, yD, yH, yF };
++            const float c[4]  = { yC, yA, yG, yI };
++            const float d[4]  = { b[1], b[2], b[3], b[0] };
++            const float f[4]  = { b[3], b[0], b[1], b[2] };
++            const float g[4]  = { c[2], c[3], c[0], c[1] };
++            const float hh[4] = { b[2], b[3], b[0], b[1] };
++            const float i[4]  = { c[3], c[0], c[1], c[2] };
++            const float i4[4] = { yI4, yC1, yA0, yG5 };
++            const float i5[4] = { yI5, yC4, yA1, yG0 };
++            const float h5[4] = { yH5, yF4, yB1, yD0 };
++            const float f4[4] = { h5[1], h5[2], h5[3], h5[0] };
++
++            float edr[4], edr_l[4], edr_u[4], edri[4], px[4];
++            int any = 0;
++            for (int k = 0; k < 4; k++) {
++                const int lv0 = (e != f[k]) && (e != hh[k]);
++                if (!lv0) { edr[k] = edr_l[k] = edr_u[k] = edri[k] = 0.f; px[k] = 0.f; continue; }
++                /* Corner rule "C": keep more 90-degree corners intact. */
++                const int lv1 =
++                    ((!eqf(f[k], b[k]) && !eqf(f[k], c[k])) ||
++                     (!eqf(hh[k], d[k]) && !eqf(hh[k], g[k])) ||
++                     (eqf(e, i[k]) && ((!eqf(f[k], f4[k]) && !eqf(f[k], i4[k])) ||
++                                       (!eqf(hh[k], h5[k]) && !eqf(hh[k], i5[k])))) ||
++                     eqf(e, g[k]) || eqf(e, c[k]));
++                const int lv2_left = (e != g[k]) && (d[k] != g[k]);
++                const int lv2_up   = (e != c[k]) && (b[k] != c[k]);
++
++                const float wd1 = wd(e, c[k], g[k], i[k], h5[k], f4[k], hh[k], f[k]);
++                const float wd2 = wd(hh[k], d[k], i5[k], f[k], i4[k], b[k], e, i[k]);
++
++                edri[k]  = (wd2 >= wd1) ? 1.f : 0.f;
++                edr[k]   = (wd2 >= wd1 + VF_XBR_EPS) && lv1 ? 1.f : 0.f;
++                edr_l[k] = (df(hh[k], c[k]) >= VF_XBR_LV2_COEFF * df(f[k], g[k])) && lv2_left ? edr[k] : 0.f;
++                edr_u[k] = (df(f[k], g[k]) >= VF_XBR_LV2_COEFF * df(hh[k], c[k])) && lv2_up ? edr[k] : 0.f;
++                px[k]    = (df(e, hh[k]) >= df(e, f[k])) ? 1.f : 0.f;
++                if (edri[k] != 0.f || edr[k] != 0.f) any = 1;
++            }
++
++            const uint32_t Ergb = src[(size_t)y * sp + x] & RGB_MASK;
++            if (!any) {
++                /* No rule fires anywhere around this pixel: plain block fill. */
++                for (int sy = 0; sy < N; sy++)
++                    for (int sx = 0; sx < N; sx++)
++                        put(dst, dp, N * x + sx, N * y + sy, Ergb);
++                continue;
++            }
++
++            const Rgb E = to_rgb(Ergb);
++            const Rgb B = to_rgb(fetch(src, sp, w, h, x, y - 1));
++            const Rgb D = to_rgb(fetch(src, sp, w, h, x - 1, y));
++            const Rgb F = to_rgb(fetch(src, sp, w, h, x + 1, y));
++            const Rgb H = to_rgb(fetch(src, sp, w, h, x, y + 1));
++            /* Blend partners per rotation: mix(Hk, Fk, px_k). */
++            const Rgb Hc[4] = { H, F, B, D };
++            const Rgb Fc[4] = { F, B, D, H };
++            Rgb P[4];
++            for (int k = 0; k < 4; k++) P[k] = mixc(Hc[k], Fc[k], px[k]);
++
++            for (int sy = 0; sy < N; sy++) {
++                for (int sx = 0; sx < N; sx++) {
++                    const XbrSub* t = &tab[sy * N + sx];
++                    float m[4];
++                    for (int k = 0; k < 4; k++) {
++                        const float a45  = edr[k] * t->f45[k];
++                        const float a30  = edr_l[k] * t->f30[k];
++                        const float a60  = edr_u[k] * t->f60[k];
++                        const float a45i = edri[k] * t->f45i[k];
++                        float mm = a30 > a60 ? a30 : a60;
++                        const float m2 = a45 > a45i ? a45 : a45i;
++                        if (m2 > mm) mm = m2;
++                        m[k] = mm;
++                    }
++                    Rgb res1 = E, res2 = E;
++                    res1 = mixc(res1, P[0], m[0]);
++                    res1 = mixc(res1, P[2], m[2]);
++                    res2 = mixc(res2, P[1], m[1]);
++                    res2 = mixc(res2, P[3], m[3]);
++                    const Rgb res = (c_df(E, res2) >= c_df(E, res1)) ? res2 : res1;
++                    put(dst, dp, N * x + sx, N * y + sy, from_rgb(res));
++                }
++            }
++        }
++    }
++#undef YROW
++#undef CX
++    free(Y);
++}
++
++/* ---- entry point ----------------------------------------------------------- */
++
++int video_filter_apply_cpu(int kind, const uint32_t* src, int src_pitch,
++                           int w, int h, uint32_t* dst, int dst_pitch) {
++    if (!vf_valid(kind) || kind == VF_NONE || !src || !dst || w <= 0 || h <= 0)
++        return 0;
++    const int N = video_filter_cpu_scale(kind);
++    if (src_pitch < w || dst_pitch < w * N) return 0;
++    switch (kind) {
++    case VF_SHARP:       prescale_rows(src, src_pitch, w, h, dst, dst_pitch, s_row_w_sharp); break;
++    case VF_SCANLINES:   prescale_rows(src, src_pitch, w, h, dst, dst_pitch, s_row_w_scanlines); break;
++    case VF_CRT:         prescale_rows(src, src_pitch, w, h, dst, dst_pitch, s_row_w_crt); break;
++    case VF_SCALE2X:     scale2x(src, src_pitch, w, h, dst, dst_pitch); break;
++    case VF_SCALE3X:     scale3x(src, src_pitch, w, h, dst, dst_pitch); break;
++    case VF_SAI2X:       sai2x(src, src_pitch, w, h, dst, dst_pitch); break;
++    case VF_SUPER_SAI2X: super_sai2x(src, src_pitch, w, h, dst, dst_pitch); break;
++    case VF_SUPER_EAGLE: super_eagle(src, src_pitch, w, h, dst, dst_pitch); break;
++    case VF_XBR2X:       xbr_lv2(src, src_pitch, w, h, dst, dst_pitch, 2); break;
++    case VF_XBR3X:       xbr_lv2(src, src_pitch, w, h, dst, dst_pitch, 3); break;
++    case VF_XBR4X:       xbr_lv2(src, src_pitch, w, h, dst, dst_pitch, 4); break;
++    default: return 0;
++    }
++    return N;
++}
+diff --git a/runtime/tests/test_video_filter.c b/runtime/tests/test_video_filter.c
+new file mode 100644
+index 0000000..d926827
+--- /dev/null
++++ b/runtime/tests/test_video_filter.c
+@@ -0,0 +1,260 @@
++/* test_video_filter.c — contract tests for the CPU video-filter reference
++ * (runtime/src/video_filter.c).
++ *
++ * What is pinned here:
++ *   - name/alias parsing round-trips and rejects junk;
++ *   - every filter produces exactly (N*w) x (N*h) pixels, N per the table, and
++ *     never reads/writes outside its buffers (run under ASan in CI; the
++ *     1x1 / 2x3 / 3x2 cases exercise every clamp path);
++ *   - a constant-colour field is a fixed point of every upscaler (no filter
++ *     may invent colour on flat regions) and of the sharp prescale;
++ *   - Scale2x / Scale3x reproduce the published EPX corner rules on a
++ *     hand-checkable staircase;
++ *   - the 2xSaI family and xBR keep a two-colour image two-coloured away from
++ *     the edge, and only introduce blends ON the edge, symmetric about it;
++ *   - output alpha is always 0xFF.
++ *
++ * Build (also registered in runtime/CMakeLists.txt as video_filter_test):
++ *   cc -I runtime/include runtime/tests/test_video_filter.c \
++ *      runtime/src/video_filter.c -lm -o video_filter_test
++ */
++
++#include "video_filter.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++static int g_fail = 0;
++#define CHECK(cond, ...) do { if (!(cond)) { g_fail++; \
++    fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
++    fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } } while (0)
++
++#define RED   0xFFFF0000u
++#define BLUE  0xFF0000FFu
++#define WHITE 0xFFFFFFFFu
++#define BLACK 0xFF000000u
++
++static uint32_t* run(int kind, const uint32_t* src, int w, int h, int* out_w, int* out_h) {
++    int N = video_filter_cpu_scale(kind);
++    /* Pad the destination with a guard border to catch overruns even without ASan. */
++    size_t dw = (size_t)w * N, dh = (size_t)h * N;
++    uint32_t* dst = (uint32_t*)malloc((dw * dh + 64) * sizeof(uint32_t));
++    memset(dst, 0xAB, (dw * dh + 64) * sizeof(uint32_t));
++    int got = video_filter_apply_cpu(kind, src, w, w, h, dst, (int)dw);
++    CHECK(got == N, "kind %d: apply returned %d, expected %d", kind, got, N);
++    for (int i = 0; i < 64; i++)
++        CHECK(dst[dw * dh + i] == 0xABABABABu, "kind %d: guard word %d clobbered", kind, i);
++    *out_w = (int)dw; *out_h = (int)dh;
++    return dst;
++}
++
++static void test_names(void) {
++    for (int k = 0; k < VF_COUNT; k++) {
++        int back = -1;
++        CHECK(video_filter_from_name(video_filter_name(k), &back) && back == k,
++              "name round-trip failed for kind %d (%s)", k, video_filter_name(k));
++        CHECK(video_filter_label(k) && video_filter_label(k)[0], "label empty for %d", k);
++    }
++    int v = -1;
++    CHECK(video_filter_from_name("XBR", &v) && v == VF_XBR2X, "alias xbr");
++    CHECK(video_filter_from_name("Super-Eagle", &v) && v == VF_SUPER_EAGLE, "alias super-eagle");
++    CHECK(video_filter_from_name("off", &v) && v == VF_NONE, "alias off");
++    CHECK(!video_filter_from_name("hq2x", &v), "hq2x must be rejected (not implemented)");
++    CHECK(!video_filter_from_name("", &v), "empty must be rejected");
++    CHECK(!video_filter_from_name(NULL, &v), "NULL must be rejected");
++    CHECK(video_filter_scale(VF_XBR4X) == 4 && video_filter_scale(VF_SCALE3X) == 3 &&
++          video_filter_scale(VF_SAI2X) == 2 && video_filter_scale(VF_CRT) == 1 &&
++          video_filter_scale(VF_NONE) == 1, "scale table");
++    CHECK(video_filter_cpu_scale(VF_SHARP) == VF_SW_PRESCALE &&
++          video_filter_cpu_scale(VF_NONE) == 1, "cpu scale for final-pass kinds");
++    video_filter_set(VF_XBR3X); CHECK(video_filter_get() == VF_XBR3X, "set/get");
++    video_filter_set(999);      CHECK(video_filter_get() == VF_NONE, "set clamps");
++    video_filter_set(-1);       CHECK(video_filter_get() == VF_NONE, "set clamps neg");
++}
++
++static void test_flat_and_sizes(void) {
++    static const int dims[][2] = { {1, 1}, {2, 3}, {3, 2}, {5, 5}, {17, 9} };
++    for (size_t d = 0; d < sizeof dims / sizeof dims[0]; d++) {
++        int w = dims[d][0], h = dims[d][1];
++        uint32_t* src = (uint32_t*)malloc((size_t)w * h * sizeof(uint32_t));
++        for (int i = 0; i < w * h; i++) src[i] = 0x00123456u;   /* alpha 0 on input */
++        for (int k = 1; k < VF_COUNT; k++) {
++            int ow, oh;
++            uint32_t* dst = run(k, src, w, h, &ow, &oh);
++            if (video_filter_is_upscaler(k) || k == VF_SHARP) {
++                for (int i = 0; i < ow * oh; i++)
++                    if (dst[i] != 0xFF123456u) {
++                        CHECK(0, "kind %d (%dx%d): flat field not preserved at %d: %08X",
++                              k, w, h, i, dst[i]);
++                        break;
++                    }
++            } else {
++                /* Scanline kinds darken rows but keep hue and alpha. */
++                for (int i = 0; i < ow * oh; i++)
++                    CHECK((dst[i] >> 24) == 0xFF, "kind %d: alpha not forced", k);
++            }
++            free(dst);
++        }
++        free(src);
++    }
++    /* VF_NONE / bad args: no-op, returns 0. */
++    uint32_t s1 = RED, d1 = 0;
++    CHECK(video_filter_apply_cpu(VF_NONE, &s1, 1, 1, 1, &d1, 1) == 0 && d1 == 0, "NONE is a no-op");
++    CHECK(video_filter_apply_cpu(VF_XBR2X, &s1, 1, 1, 1, &d1, 1) == 0, "pitch too small rejected");
++    CHECK(video_filter_apply_cpu(VF_XBR2X, NULL, 1, 1, 1, &d1, 2) == 0, "NULL src rejected");
++}
++
++/* Staircase: a 2x2 red block on white in a 4x4 field.
++ *   W W W W
++ *   W R R W
++ *   W R R W
++ *   W W W W                                                              */
++static void test_scale2x_rules(void) {
++    uint32_t src[16];
++    for (int i = 0; i < 16; i++) src[i] = WHITE;
++    src[5] = src[6] = src[9] = src[10] = RED;
++    int ow, oh;
++    uint32_t* d = run(VF_SCALE2X, src, 4, 4, &ow, &oh);
++    /* EPX rounds the convex corners of an isolated block: each corner pixel
++     * has two equal orthogonal (background) neighbours, so its outer sub-pixel
++     * takes the background colour. Everything else of the 4x4 stays red. */
++    for (int y = 0; y < 8; y++)
++        for (int x = 0; x < 8; x++) {
++            int in = (x >= 2 && x <= 5 && y >= 2 && y <= 5);
++            int corner = (x == 2 || x == 5) && (y == 2 || y == 5);
++            uint32_t want = (in && !corner) ? RED : WHITE;
++            CHECK(d[y * 8 + x] == want, "scale2x square: (%d,%d)=%08X", x, y, d[y * 8 + x]);
++        }
++    free(d);
++
++    /* Diagonal: red lower-left triangle. EPX fills the staircase corners.
++     *   W W W
++     *   R W W
++     *   R R W  */
++    uint32_t tri[9] = { WHITE, WHITE, WHITE, RED, WHITE, WHITE, RED, RED, WHITE };
++    d = run(VF_SCALE2X, tri, 3, 3, &ow, &oh);
++    /* Centre pixel (1,1) is W with D=R (left) and H=R (below): E2 (its
++     * bottom-left sub-pixel) becomes R (D==H, D!=B, H!=F); the other three
++     * sub-pixels stay W. */
++    CHECK(d[3 * 6 + 2] == RED,   "epx: E2 of centre should be RED (%08X)", d[3 * 6 + 2]);
++    CHECK(d[2 * 6 + 2] == WHITE, "epx: E0 of centre should stay WHITE");
++    CHECK(d[2 * 6 + 3] == WHITE, "epx: E1 of centre should stay WHITE");
++    CHECK(d[3 * 6 + 3] == WHITE, "epx: E3 of centre should stay WHITE");
++    free(d);
++
++    /* Scale3x on the same triangle: centre pixel's E6 (bottom-left) → D. */
++    d = run(VF_SCALE3X, tri, 3, 3, &ow, &oh);
++    CHECK(d[5 * 9 + 3] == RED, "scale3x: E6 of centre should be RED (%08X)", d[5 * 9 + 3]);
++    CHECK(d[4 * 9 + 4] == WHITE, "scale3x: E4 (centre) must be the source pixel");
++    CHECK(d[3 * 9 + 5] == WHITE, "scale3x: E2 (top-right) must stay WHITE");
++    free(d);
++}
++
++static int is_pure(uint32_t c) { return c == RED || c == WHITE; }
++static int is_blend(uint32_t c) {
++    /* Any convex mix of RED and WHITE keeps R=0xFF and G==B. */
++    return ((c >> 16) & 0xFF) == 0xFF && ((c >> 8) & 0xFF) == (c & 0xFF);
++}
++
++/* 8x8 field, red below the anti-diagonal (x + y >= 8 → red). Away from the
++ * edge the output must be pure; blends only appear within one source pixel of
++ * the edge; and the image must be symmetric under the transpose (x<->y),
++ * because the source is. */
++static void test_edge_filters(void) {
++    enum { W = 8 };
++    uint32_t src[W * W];
++    for (int y = 0; y < W; y++)
++        for (int x = 0; x < W; x++)
++            src[y * W + x] = (x + y >= W) ? RED : WHITE;
++    static const int kinds[] = { VF_SAI2X, VF_SUPER_SAI2X, VF_SUPER_EAGLE,
++                                 VF_XBR2X, VF_XBR3X, VF_XBR4X };
++    for (size_t i = 0; i < sizeof kinds / sizeof kinds[0]; i++) {
++        int k = kinds[i], ow, oh;
++        int N = video_filter_scale(k);
++        uint32_t* d = run(k, src, W, W, &ow, &oh);
++        int blends = 0;
++        for (int y = 0; y < oh; y++)
++            for (int x = 0; x < ow; x++) {
++                uint32_t c = d[y * ow + x];
++                int sx = x / N, sy = y / N;
++                int dist = sx + sy - W;             /* signed distance to the edge, in source px */
++                CHECK(is_pure(c) || is_blend(c), "%s: (%d,%d)=%08X is not a red/white mix",
++                      video_filter_name(k), x, y, c);
++                if (dist <= -3) CHECK(c == WHITE, "%s: far white side altered at (%d,%d)=%08X",
++                                      video_filter_name(k), x, y, c);
++                if (dist >= 2)  CHECK(c == RED, "%s: far red side altered at (%d,%d)=%08X",
++                                      video_filter_name(k), x, y, c);
++                if (!is_pure(c)) blends++;
++            }
++        /* The edge is a 45-degree diagonal — the whole point of these filters
++         * is to smooth it, so SOME blending must occur. */
++        CHECK(blends > 0, "%s: diagonal edge produced no blends at all", video_filter_name(k));
++        /* Symmetry: the diagonal source is transpose-symmetric; the 2xSaI
++         * family is not (it is biased toward the right/bottom neighbour by
++         * construction), but xBR must be. */
++        if (k >= VF_XBR2X && k <= VF_XBR4X) {
++            for (int y = 0; y < oh; y++)
++                for (int x = 0; x < ow; x++)
++                    CHECK(d[y * ow + x] == d[x * ow + y],
++                          "%s: not transpose-symmetric at (%d,%d): %08X vs %08X",
++                          video_filter_name(k), x, y, d[y * ow + x], d[x * ow + y]);
++        }
++        free(d);
++    }
++}
++
++/* Vertical bar: a 1-pixel-wide red line on white must stay a crisp N-wide bar
++ * for Scale2x/3x and xBR (thin features are preserved, not smeared). The 2xSaI
++ * family blurs single-pixel lines by design (its diagonal Q_INTERPOLATE fires
++ * on every W/R/W/R quad), so it is deliberately not held to this. */
++static void test_thin_line(void) {
++    enum { W = 7, H = 5 };
++    uint32_t src[W * H];
++    for (int y = 0; y < H; y++)
++        for (int x = 0; x < W; x++)
++            src[y * W + x] = (x == 3) ? RED : WHITE;
++    static const int kinds[] = { VF_SCALE2X, VF_SCALE3X, VF_XBR2X, VF_XBR3X, VF_XBR4X };
++    for (size_t i = 0; i < sizeof kinds / sizeof kinds[0]; i++) {
++        int k = kinds[i], ow, oh, N = video_filter_scale(k);
++        uint32_t* d = run(k, src, W, H, &ow, &oh);
++        for (int y = N; y < oh - N; y++)          /* skip top/bottom rows (clamped ends) */
++            for (int x = 0; x < ow; x++) {
++                int in = (x >= 3 * N && x < 4 * N);
++                CHECK(d[y * ow + x] == (in ? RED : WHITE),
++                      "%s: thin line smeared at (%d,%d)=%08X", video_filter_name(k),
++                      x, y, d[y * ow + x]);
++            }
++        free(d);
++    }
++}
++
++static void test_prescale_rows(void) {
++    uint32_t src[2] = { WHITE, 0xFF808080u };
++    int ow, oh;
++    uint32_t* d = run(VF_SCANLINES, src, 2, 1, &ow, &oh);
++    CHECK(ow == 2 * VF_SW_PRESCALE && oh == VF_SW_PRESCALE, "prescale dims");
++    CHECK(d[0] == WHITE && d[1] == WHITE && d[2] == WHITE, "prescale row 0 untouched");
++    CHECK(d[3] == 0xFF808080u, "prescale copies pixel 1");
++    /* Last row of the triple is the dark gap: strictly darker, still grey. */
++    uint32_t gap = d[2 * ow + 0];
++    CHECK((gap & 0xFF) < 0xFF && ((gap >> 8) & 0xFF) == (gap & 0xFF) &&
++          ((gap >> 16) & 0xFF) == (gap & 0xFF), "scanline gap row is a darker grey: %08X", gap);
++    free(d);
++    d = run(VF_SHARP, src, 2, 1, &ow, &oh);
++    for (int i = 0; i < ow * oh; i++)
++        CHECK(d[i] == ((i % ow) < VF_SW_PRESCALE ? WHITE : 0xFF808080u), "sharp prescale is nearest");
++    free(d);
++}
++
++int main(void) {
++    test_names();
++    test_flat_and_sizes();
++    test_scale2x_rules();
++    test_edge_filters();
++    test_thin_line();
++    test_prescale_rows();
++    if (g_fail) { fprintf(stderr, "video_filter_test: %d failure(s)\n", g_fail); return 1; }
++    printf("video_filter_test: OK\n");
++    return 0;
++}

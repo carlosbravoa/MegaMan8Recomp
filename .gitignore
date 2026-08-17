@@ -16,6 +16,7 @@
 *.zip
 
 # Local PlayStation assets (never commit dumps / BIOS)
+/game-assets/
 /bios/
 /isos/
 /saves/
@@ -73,3 +74,6 @@ starvation_dump.jsonl
 /*.png
 !/catalog_identity.json
 !/disc_probe.json
+
+# Local agent rules (not part of the repo)
+CLAUDE.md

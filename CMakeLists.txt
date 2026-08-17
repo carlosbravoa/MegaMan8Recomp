@@ -31,6 +31,30 @@ psxrecomp_add_game_runtime(psx-runtime
     CODEGEN_SETUP_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/codegen_setup.c"
 )
 
+# --- Game-owned mod plugins -------------------------------------------------
+# Trusted static plugins referenced by mods/preloaded/packages/*/manifest.toml
+# ([[plugin]] id). They must be linked INTO the runtime; the manifest only
+# names them. PSX_MOD_CONSTRUCTOR registers each before main().
+file(GLOB MM8_MOD_PLUGIN_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/mods/*.c")
+if(MM8_MOD_PLUGIN_SOURCES)
+    target_sources(psx-runtime PRIVATE ${MM8_MOD_PLUGIN_SOURCES})
+    target_include_directories(psx-runtime PRIVATE
+        "${PSXRECOMP_ROOT}/runtime/include")
+endif()
+
+# Preload Mega Man 8's own mod catalog beside the runtime. The launcher's Mods
+# page reads <exe dir>/mods; the framework stages its own catalog there too, so
+# copy into the same directory rather than replacing it.
+set(MM8_PRELOADED_MODS "${CMAKE_CURRENT_SOURCE_DIR}/mods/preloaded")
+if(EXISTS "${MM8_PRELOADED_MODS}/packages")
+    add_custom_command(TARGET psx-runtime POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${MM8_PRELOADED_MODS}"
+            "$<TARGET_FILE_DIR:psx-runtime>/mods"
+        COMMENT "Preloading the Mega Man 8 mod catalog")
+endif()
+
 # Stage runtime configs next to the exe for direct build/ launches. Only copy
 # files that exist — never fail POST_BUILD when game_options.toml is absent.
 foreach(_PSX_RUNTIME_CONFIG game.toml game_options.toml)
