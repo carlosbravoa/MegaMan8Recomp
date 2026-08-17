@@ -451,11 +451,13 @@ that shows the picture while `screenshot` is black would split those.
 **Analysis of the four 2026-08-17 F9 bundles (14:52–14:57, release, OpenGL,
 supersampling 1, scanlines, stage 04 approaching the boss):**
 
-* The game is not hung and VRAM is not corrupt in the GPU sense: each frame
-  the game still fills the screen black, re-uploads the palette bank and calls
-  VSync — that is its *scheduler* loop running with nothing to draw. VRAM
-  texture pages are empty because the game had cleared them for a load and
-  the code that re-uploads them never ran again.
+* The game is not hung and VRAM is intact: every texture-page column has the
+  same occupancy as a working stage save; only the two framebuffers are zero.
+  Each frame the root loop still fills the display black (its per-VSync
+  routine's `0x02` fill), re-uploads the palette bank and calls VSync — that
+  is the *scheduler* loop running while the thread that draws the world, HUD
+  and sprites is asleep. No load or transition is involved, which matches the
+  reports (nothing special on screen when it happens).
 * MM8 runs its game logic in a **BIOS thread** (TCB `0xA000E35C`, entry
   `0x801008C8`, record 0 of a 3-thread table at `0x801FC000`, 80 bytes per
   record: `u16 state, u16 sleep_counter, u32 entry, u32 thread_id, u32 sp`).
@@ -477,7 +479,9 @@ supersampling 1, scanlines, stage 04 approaching the boss):**
   safety net (a thread's top-level dispatch returning `pc==0`), or a deferred
   in-exception `ChangeThread` resolving to the wrong TCB — an IRQ landing
   while the game thread is running (a lag frame: heavy scenes, boss
-  approach, load transitions = #15) is the likely window. It does not
+  approach) is a plausible window but not required — an ordinary frame with
+  an IRQ at the wrong instant would do; #15 (black stage after a load, music
+  playing) may be the same mechanism. It does not
   reproduce headless (unpaced software, 13k frames) nor in a 3-minute windowed
   OpenGL run with rewind on.
 
