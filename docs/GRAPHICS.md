@@ -46,6 +46,65 @@ tile/sprite uses is per primitive (from the game's tables), not per page.
 8bpp/15bpp usage was not observed in that frame (bosses / cutscene PACs
 untested).
 
+## A3 — tile pipeline (decoded from `func_800F99F8`, the column renderer, and the scratchpad ctx)
+
+The loader copies every non-pixel section to a fixed RAM address from a
+destination table at **`0x80137840`** (u32 per slot; STDATA type *t* → slot
+*t*+4, PLAYER.PAC types 1–3 → slots 1–3): STAGE type 0/1/2 → `0x8016EF34/F334/F734`,
+type 3 → `0x80190040` (working copy at `0x80171C3C`), type 4 → `0x8015EA88`,
+type 5 → `0x80078000`, 7 → `0x80170348`, 8 → `0x80159F64`, 9 → `0x8015A064`,
+12/13/14 → `0x8016D408/DC0C/E40C`, 15 → `0x801AE040`, 18 → `0x800A0000`;
+PLAYER 1 → `0x80020000`, 2 → `0x8018FC40`, 3 → `0x80054000`.
+
+Background drawing, per layer (`func_800F98D8` drives 21 columns × N rows,
+scratchpad ctx: +4 start col, +6 start row, +8/+A screen x/y, +C **map
+base**, +0x10 packet cursor, +0x14/+0x34 two banks of 8 OT list heads,
++0x74 CLUT base word `0x7900`):
+
+```
+map     = section 0 / 1 / 2  (one per layer): 32 × 32 bytes, block id per 256×256-px cell,
+          index = (row >> 4) * 32 + (col >> 4)             (0 = empty cell)
+block   = section 3: 512 bytes per id = 16×16 u16 entries, index (col & 15) + ((row & 15) << 4)
+          entry: bits 0-11 tile-def id (0 = empty), bit 12 = OT bank (front/back), bit 13 = semi-transparent
+def     = section 4: 4 bytes per id: [ (v_row << 4) | u_col ] [ page slot 0-7 (& 7) ] [ clut byte ] [ flags ]
+          u = (b0 & 15) * 16, v = b0 & 0xF0 (16×16 tile inside a 256×256 page column)
+          page = VRAM (512 + 64*slot, 256)  → column *slot* of section 259
+          clut word = 0x7900 + (b2 & 15) + ((b2 & 0x30) << 2) → palette row 4 + (b2 >> 4 & 3), CLUT index b2 & 15
+          b1 & 7 also selects the OT list (one per page → one E1 texpage packet per list)
+packet  = SPRT_16 (0x7C) at (screen x, y), (u, v), clut — colour 0x808080
+```
+
+`tools/pac_gfx.py tiles STAGE.PAC out/` renders every definition with its
+own CLUT (`tiles.png`, 32 per row; `tiles.txt` lists slot/u/v/clut/flags);
+`tools/pac_gfx.py map STAGE.PAC out/` renders the three layer maps to
+`map_layer<N>.png` + `map.txt` (block grid). Verified on the intro stage: all
+540 background tiles of a live frame resolve to exactly one definition each,
+and the rendered map is the playable level (beach → ruins → underground);
+STAGE01/05/0B render likewise (rooms scattered over the 32×32 grid).
+
+### Sprites (partly decoded)
+
+* **Player**: every animation frame is a 16-px-tall *strip* (24–64 halfwords
+  = 48–128 px wide, 4bpp) inside `PLAYER.PAC` section 1 (all strips back to
+  back, 193 KB, in RAM at `0x80020000`), streamed by LoadImage into the VRAM
+  slot (320,192) when the frame changes. Drawn as a **metasprite of 0x2C
+  quads**: each part is a 16×16 cell of the strip (`u = 16k`, `v = 192`, CLUT
+  `0x7808`, page (320,0)) placed at `(dx, dy)` from the actor position,
+  mirrored by vertex order when facing left (`chrdir` bit 0x40/0x80).
+* **Metasprite tables** — STAGE section 5 (`0x80078000`, 78 KB): a header
+  of 302 `{u16 part_count, u16 offset}` followed by part lists of 4-byte
+  `{u16 cell index, s8 dx, s8 dy}`; PLAYER sections 2/3 (`0x8018FC40`,
+  `0x80054000`) are pixel data (4bpp).
+* ⬜ Open: the **frame → strip (offset, width)** mapping is not a data table
+  in the PACs (searched all encodings) — the animation *scripts* (`scrptr` in
+  the actor struct, DEBUG-MENU name) compute the source pointer, and the
+  LoadImage for the (320,192) slot is issued from the game code (caller of
+  `0x800D53F0`'s LoadImage with `s2` = strip pointer). Resolving it (Ghidra on
+  the animation interpreter, or logging `s2`/width per frame with the
+  `a0_history` extras) gives per-frame sprite sheets. Same for enemies:
+  section 258 sheets are cut by their metasprite cells; the cell→(u,v) rule
+  is presumably `u = 16*(idx & 15)`, `v = 16*(idx >> 4)` per page — unverified.
+
 ## Rendering a section (what `tools/pac_gfx.py extract` does)
 
 ```
@@ -67,11 +126,12 @@ parts; 258: enemies), which is the proof of the map above.
 | `tools/pac_gfx.py extract PAC OUT` | sections → PNG (+ palettes) |
 | `tools/pac_tool.py` | container list/unpack/pack |
 
-## Next (ROADMAP A3–A5)
+## Next (ROADMAP A3b–A5)
 
-* A3 sprite/tile definition tables (which CLUT + rect per sprite frame / tile
-  id) so PNGs can be cut per sprite and coloured correctly — Ghidra on
-  `0x80171C3C` (tile defs) and the STDATA 16-bit tables (types 5/6/7).
+* A3b sprite frame tables (player strips, enemy metasprite cells) — see the
+  open item above; tiles are done.
 * A5 `pac_gfx.py pack`: PNG → indexed pixels against a recorded CLUT → chunks
-  → section (byte-identical round trip on untouched art). Palette recolours
-  (section 9) are the first end-to-end edit.
+  → section (byte-identical round trip on untouched art); with the tile
+  pipeline decoded, `tiles.png` / `map_layer*.png` edits can be written back
+  through defs + pages. Palette recolours (section 9) are the first
+  end-to-end edit.
