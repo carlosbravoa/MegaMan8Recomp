@@ -9,7 +9,7 @@ pinned to them:
 
 | submodule | pinned to | = upstream + |
 |---|---|---|
-| `psxrecomp` | `carlosbravoa/psxrecomp` branch **`mm8`** (`070e058`) | `mstan/psxrecomp` `dca482e` + 9 commits (§1–8 below; `478cc09` scheduler lost-return recovery + host-menu input isolation, `070e058` §8) |
+| `psxrecomp` | `carlosbravoa/psxrecomp` branch **`mm8`** (`7ed4f45`) | `mstan/psxrecomp` `dca482e` + 10 commits (§1–8 below; `478cc09` scheduler lost-return recovery + host-menu input isolation, `070e058` §8, `7ed4f45` savestates carry the mod GPU-DMA aperture) |
 | `recomp-ui` | `carlosbravoa/recomp-ui` branch **`mm8`** (`4ee44bd`) | `mstan/recomp-ui` `1b91c14` + 1 commit (§ui-1) |
 
 So `git submodule update --init --recursive` reproduces the exact framework

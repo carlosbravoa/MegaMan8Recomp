@@ -33,9 +33,54 @@
  */
 extern void gpu_ws_mmx6_set_freshfix(int on);
 
+/*
+ * Tile-packet arena relocation (func_800F98D8 entry).
+ *
+ * The tile renderer bump-allocates its 16-byte GP0 packets from a pointer in
+ * scratchpad (0x1F800010) that func_800F9BC8 resets every frame to one of two
+ * 16 KB arenas: 0x801C73FC + (frame parity << 14). Natively 3 layers x 21
+ * columns x 16 rows = 1008 packets fit the 1024 slots with nothing to spare;
+ * with the 7 extra columns of the reveal a dense frame needs up to 1344, and
+ * the second arena's overflow lands on 0x801CF848 — the MSET/CTRL actor array
+ * — and beyond, i.e. memory corruption that surfaced as a fatal `GPU GP0
+ * unknown command 0xF0` a few seconds into a scene (crash report
+ * psx_last_run_report.json: packet pointer at 0x801CF52C, 0x31C below the
+ * array). The centred build had the same 8-column overflow — the most likely
+ * source of the black screens / lost returns of ISSUES #19 while widescreen
+ * was on.
+ *
+ * Fix: when the pointer still holds a fresh game arena base at the FIRST tile
+ * call of a frame (nothing allocated yet), point it at a 32 KB arena of our own
+ * in the framework's GPU-DMA aperture (psx_mod_alloc_gpu_dma_memory: guest
+ * memory whose addresses survive the 24-bit OT tags, one arena per parity so
+ * the double buffering is preserved). Every packet of the frame then lives
+ * there and the OT links to it as before; the game never reads the arena by
+ * range. Savestates carry the aperture (BS_SEC_MODGPU). Identity at 4:3
+ * (margins 0 -> no redirect), and nothing is mapped unless the mod is on.
+ */
+#define MM8_TILE_PKT_PTR     0x1F800010u
+#define MM8_TILE_ARENA_A     0x801C73FCu
+#define MM8_TILE_ARENA_B     0x801CB3FCu
+#define MM8_TILE_ARENA_BYTES 0x8000u        /* 2048 packets; the reveal needs <= 1344 */
+
+static uint32_t s_tile_arena = 0;            /* our A|B pair, 0 = not allocated */
+
+static void mm8_widescreen_tile_arena(void) {
+    if (psx_mod_widescreen_x_margin_left() <= 0 &&
+        psx_mod_widescreen_x_margin_right() <= 0) return;
+    if (!s_tile_arena) return;
+    const uint32_t ptr = psx_mod_read_word(MM8_TILE_PKT_PTR);
+    if (ptr == MM8_TILE_ARENA_A)
+        psx_mod_write_word(MM8_TILE_PKT_PTR, s_tile_arena);
+    else if (ptr == MM8_TILE_ARENA_B)
+        psx_mod_write_word(MM8_TILE_PKT_PTR, s_tile_arena + MM8_TILE_ARENA_BYTES);
+}
+
 static void mm8_widescreen_activate(void) {
     gpu_ws_mmx6_set_freshfix(0);
     (void)psx_mod_set_fixed_display_aspect(16u, 9u);
+    if (!s_tile_arena)
+        s_tile_arena = psx_mod_alloc_gpu_dma_memory(2u * MM8_TILE_ARENA_BYTES, 16u);
 }
 
 /*
@@ -130,6 +175,7 @@ static void mm8_widescreen_spawn_window(struct CPUState* cpu, uint32_t address) 
 static void mm8_widescreen_world_gate(struct CPUState* cpu, uint32_t address) {
     (void)cpu; (void)address;
     psx_mod_widescreen_set_world(psx_mod_read_byte(MM8_PLAYER_ACTOR) != 0);
+    mm8_widescreen_tile_arena();
 }
 
 PSX_MOD_CONSTRUCTOR(mm8_register_widescreen_plugin) {

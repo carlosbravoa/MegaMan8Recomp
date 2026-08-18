@@ -72,12 +72,25 @@ stage iris (measured with `present_capture` every frame in both directions).
    `gpu_ws_mmx6_set_freshfix(0)`: the MMX6 ring refill defaults on and would
    write through the framework's default layer/ring addresses — arbitrary RAM
    here.
-5. **`[[widescreen.cull.edge]]`** — the game's screen-edge bounds (next section).
-6. **The mod plugin** (`src/mods/mm8_widescreen_plugin.c`):
+5. **Tile-packet arena relocation** (plugin, at the tile renderer's entry) —
+   the renderer bump-allocates its 16-byte packets from scratchpad `0x1F800010`,
+   reset every frame to one of two 16 KB arenas (`0x801C73FC + parity<<14`).
+   Natively 3 × 21 × 16 = 1008 packets fit the 1024 slots; the 7 extra columns
+   need up to 1344 and the second arena's overflow lands on the MSET/CTRL actor
+   array at `0x801CF848` — memory corruption that crashed the app with `GPU GP0
+   unknown command 0xF0` a few seconds into a scene (crash report: packet
+   pointer at `0x801CF52C`). The plugin redirects a fresh pointer to a 32 KB
+   arena of its own in the framework's GPU-DMA aperture
+   (`psx_mod_alloc_gpu_dma_memory`, one per parity); the OT links into it as
+   before and savestates carry it (`BS_SEC_MODGPU`). The centred build had the
+   same overflow (8 columns), which is the most plausible source of the
+   black-screen / lost-return reports of ISSUES #19 while widescreen was on.
+6. **`[[widescreen.cull.edge]]`** — the game's screen-edge bounds (next section).
+7. **The mod plugin** (`src/mods/mm8_widescreen_plugin.c`):
    `psx_mod_set_fixed_display_aspect(16, 9)` on activation (widescreen is
    mod-owned on PSX — a bare `[video] aspect_ratio` is clamped back to 4:3);
-   the spawn-window hook; the world gate.
-7. **HUD** — MM8 builds the player HUD into a dedicated double-buffered packet
+   the spawn-window hook; the world gate; the arena relocation.
+8. **HUD** — MM8 builds the player HUD into a dedicated double-buffered packet
    arena (`nw_left_hud_packet_lo/hi = 0x80152900..0x80152E00`, both buffers
    observed at `0x80152974..0x80152AE4` / `0x80152D54..0x80152DD4`). Left-third
    pieces move by the left margin (0: they already sit at the wide left edge),

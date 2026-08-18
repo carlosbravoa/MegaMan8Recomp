@@ -422,7 +422,17 @@ present capture, optional `--bug-report`). Verified: slot load → screenshot �
 xbr2x/scale3x present capture → bug-report bundle → clean exit 0 in seconds,
 no window. Patch `upstream/0006-…`.
 
-## #19 — Black screen mid-play, audio + input alive, rewind recovers — MITIGATED (root cause located, lost-return recovery in place)
+## #19 — Black screen mid-play, audio + input alive, rewind recovers — MITIGATED (root cause located, lost-return recovery in place; likely trigger found 2026-08-18)
+
+**2026-08-18 update — the probable trigger.** Every report came from a
+widescreen session, and the widescreen tile-column widen (8 extra columns
+then, 7 now) overflowed the game's 16 KB tile-packet arena into the MSET/CTRL
+actor array at `0x801CF848` whenever a frame was dense enough
+(`docs/WIDESCREEN.md`, "Tile-packet arena relocation"; the same overflow crashed
+the app outright with `GPU GP0 unknown command 0xF0` — `psx_last_run_report.json`
+showed the packet pointer 0x31C below the array). Corrupted actor records are a
+credible source of a lost return in an actor routine. The arena is relocated
+now; if #19 never recurs with widescreen on, this was it.
 
 Reported 2026-08-17 (first seen 2026-08-16, i.e. **before** the texture-pack
 work — the pack is not a suspect): after a while of normal play the picture
@@ -501,6 +511,26 @@ events, IRQ contexts, CD/IRQ/DMA state, registers and hot PCs;
 flags where the per-frame switch cadence breaks. **Next time it happens:
 press F9 before rewinding** and the bundle will show which escape put the
 root thread back early.
+
+## #21 — Widescreen: crash `GPU GP0 unknown command 0xF0` seconds into a scene — FIXED (2026-08-18)
+
+Player report: full intro, new scene loaded, a few seconds later the app was
+gone with nothing on screen. `psx_last_run_report.json`: reason `GPU GP0
+unknown command 0xF0 (word 0xF0E80010)`, frame 23656, scratchpad `0x1F800010`
+(the tile-packet write pointer) = `0x801CF52C` — 19 packets past the end of
+the game's second 16 KB tile-packet arena (`0x801CB3FC + 0x4000`), 0x31C
+below the MSET/CTRL actor array at `0x801CF848`. The widescreen tile-column
+widen (7 extra columns × 16 rows × 3 layers = up to 1344 packets in an arena
+of 1024) overflows on dense frames; the corruption reaches the GPU as a
+garbage packet word and the runtime treats an unknown GP0 command as fatal.
+
+Fix: the widescreen plugin relocates the arena to a 2 × 32 KB block in the
+framework's GPU-DMA aperture at the first tile call of each frame
+(`psx_mod_alloc_gpu_dma_memory`; OT links resolve there); the framework saves
+the aperture in savestates (`BS_SEC_MODGPU`, and the state's section count is
+no longer hard-coded). Verified: packet pointer sampled during play stays in
+`0x80F00000..0x80F10000`, frames render identically, save_path → load_path
+round trip resumes on the same frame. Likely the trigger of #19 as well.
 
 ## #20 — Host menus leaked their confirm key/button into the game — FIXED
 
