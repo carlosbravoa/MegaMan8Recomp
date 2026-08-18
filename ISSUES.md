@@ -532,6 +532,25 @@ no longer hard-coded). Verified: packet pointer sampled during play stays in
 `0x80F00000..0x80F10000`, frames render identically, save_path → load_path
 round trip resumes on the same frame. Likely the trigger of #19 as well.
 
+## #22 — Widescreen: Tengu Man's first-gap hover platform never appeared — FIXED (2026-08-18)
+
+The purple hover disc that rises from below the first gap (SET `id 19`, set
+entry 72 at 968,1024) spawned through the translated spawn strip at dx≈438,
+and its STAGE03 routine (`0x801E7B20`: `(x-camX+55) <u 431`, i.e. alive iff
+`-55 <= x-camX < 376`) killed it on the same frame — every frame — so it
+never rose. The bias+range idiom hid the 4:3 width inside the `sltiu`, which
+the first overlay scan (looking for `addiu … 320..384`) did not catch. New
+`[[widescreen.cull.edge]]` sides `bias` (`+= left`) / `range` (`+= left+right`)
+cover it; a scan of the EXE and all overlays for `sltiu 300..560` after a small
+`addiu` bias found five instances (main EXE, STAGE03 ×2, STAGE0B, DEMO), all
+listed in `game.toml`. Verified: the platform spawns, rises and hovers in the
+gap in widescreen (telemetry + captures), matching 4:3.
+
+Also observed while chasing it: the flying carrier (`id 17`) that precedes the
+gap can be shot down before it deploys — in widescreen it is exposed to buster
+fire ~106 px earlier (shots reach the wide edge). That is the "reveal extends
+gameplay" trade-off, not a spawn bug; see the A/B choice in the widescreen doc.
+
 ## #20 — Host menus leaked their confirm key/button into the game — FIXED
 
 Saving a slot with Enter opened the game's pause menu; loading a state into

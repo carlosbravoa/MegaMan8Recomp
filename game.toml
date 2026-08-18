@@ -246,6 +246,17 @@ edge = [
   { address = "0x801E4340", expected = "0x24420160", side = "right" },  # STAGE0B spawn at camX+352
   { address = "0x801E5B10", expected = "0x24420160", side = "right" },  # STAGE0B spawn at camX+352
   { address = "0x801F447C", expected = "0x2442FFC0", side = "left"  },  # STAGE0D spawn at camX-64
+  # bias+range keep-alive idiom: alive iff (x-camX+K) <u W  ->  [-K, W-K)
+  { address = "0x80125170", expected = "0x24420014", side = "bias"  },  # main EXE  addiu v0,v0,20 / sltiu 348 -> [-20, 328)
+  { address = "0x80125178", expected = "0x2C42015C", side = "range" },
+  { address = "0x801E7B34", expected = "0x24420037", side = "bias"  },  # STAGE03 hover platform: addiu 55 / sltiu 431 -> [-55, 376) — the Tengu gap platform died on spawn without this
+  { address = "0x801E7B38", expected = "0x2C4201AF", side = "range" },
+  { address = "0x801DDE64", expected = "0x24420063", side = "bias"  },  # STAGE03 addiu 99 / sltiu 519 -> [-99, 420)
+  { address = "0x801DDE68", expected = "0x2C420207", side = "range" },
+  { address = "0x801DD4AC", expected = "0x24420063", side = "bias"  },  # STAGE0B same idiom
+  { address = "0x801DD4B0", expected = "0x2C420207", side = "range" },
+  { address = "0x801DB85C", expected = "0x24420010", side = "bias"  },  # DEMO.BIN addiu 16 / sltiu 353 -> [-16, 337)
+  { address = "0x801DB864", expected = "0x2C420161", side = "range" },
 ]
 
 # Background tile loop. MM8's renderer is func_800F98D8: 21 columns of 16x16

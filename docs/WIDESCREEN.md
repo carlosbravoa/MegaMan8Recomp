@@ -109,6 +109,7 @@ struct `0x801D2914`, `camX` at +6) with the **4:3 width baked in**:
 | on-screen flag `inscrn` `func_80104A68` (+ parametric `func_80104AEC`, `func_8012D1B0`) | `camX-32 < x < camX+352` | `< camX+458` |
 | actors parked at the right edge (`0x8011C01C`, STAGE03/0B `+352`) | `camX+336` / `+352` | `+442` / `+458` |
 | per-stage overlay copies of the same idiom | e.g. STAGE00 `camX+376 < x`, STAGE04 keep-alive, STAGE07 window | listed with their instruction word; applied only where that stage's code holds it |
+| bias+range keep-alive `(x-camX+K) <u W` (main EXE `0x80125170`, STAGE03 ×2, STAGE0B, DEMO) | alive iff `-K <= x-camX < W-K`, e.g. STAGE03's hover platform `[-55, 376)` | `bias` += left, `range` += left+right |
 
 Why it matters, measured on the intro stage with actor telemetry
 (`tools/ws_headless.sh` + `read_ram` of the ENEMY array every 4 frames): with
@@ -138,11 +139,19 @@ Left-side bounds are all listed with `side = "left"` and are identity with the
 left anchor; a centred anchor would move them too. Register-computed left
 bounds (`subu v1,a3,a1`) are `edge` sites as well.
 
+The Tengu Man gap platform (SET `id 19`, the purple hover disc that rises
+from below the first gap) is what exposed the bias+range form: it spawns via
+the translated strip at dx≈438 and its own STAGE03 routine (`0x801E7B20`)
+kept it alive only for `[-55, 376)`, so it was born and killed on the same
+frame, every frame, and never rose. With `bias`/`range` sites it spawns,
+rises and hovers in the gap exactly as in 4:3 (telemetry + frame captures).
+
 **Not covered:** other overlay-local screen-edge idioms that use layer fields
-other than camX (`+0x14`, `+0x2C`) or Y — the scan
-(`tools`: disassemble the OVL files for `addiu … 320/336/352/368/376/384`
-with a `camX` load in the four preceding instructions) listed them; add an
-`edge` entry with the exact word once each is understood.
+other than camX (`+0x14`, `+0x2C`) or Y, or register-only compares — the
+scans (`addiu … 320/336/352/368/376/384` after a `camX` load; `sltiu 300..560`
+after a small `addiu` bias) listed what is handled; add an `edge` entry with
+the exact word once each new one is understood. Report a "never appears" the
+way the Tengu platform was: it is almost always one of these.
 
 ## Known cosmetics
 
