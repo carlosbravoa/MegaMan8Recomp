@@ -9,7 +9,7 @@ pinned to them:
 
 | submodule | pinned to | = upstream + |
 |---|---|---|
-| `psxrecomp` | `carlosbravoa/psxrecomp` branch **`mm8`** (`e585beb`) | `mstan/psxrecomp` `dca482e` + 7 commits (§1–7 below) |
+| `psxrecomp` | `carlosbravoa/psxrecomp` branch **`mm8`** (`070e058`) | `mstan/psxrecomp` `dca482e` + 9 commits (§1–8 below; `478cc09` scheduler lost-return recovery + host-menu input isolation, `070e058` §8) |
 | `recomp-ui` | `carlosbravoa/recomp-ui` branch **`mm8`** (`4ee44bd`) | `mstan/recomp-ui` `1b91c14` + 1 commit (§ui-1) |
 
 So `git submodule update --init --recursive` reproduces the exact framework
@@ -424,3 +424,60 @@ bytes blessed into the text-image guard.
 * Not exercised: Windows build (std::filesystem/ifstream only, nothing
   platform-specific), CHD sources for extraction (the extractor needs a raw
   bin/cue; the runtime can still mount a CHD as before).
+
+## 8 — native-wide anchor, 2D screen-edge bounds, headless widescreen, build-agnostic savestates
+
+Four related framework changes from the Mega Man 8 widescreen work
+(2026-08-18; `docs/config_schema.md`, `docs/HEADLESS.md`, `docs/BOOKMARKS.md`).
+
+* **`[widescreen] nw_anchor = "center"|"left"|"right"`** — how the native-wide
+  EXTRA width splits between the sides. A 2D side-scroller authored against the
+  4:3 left edge (camera clamps, player walls, spawn windows, stage-start
+  positions) keeps every left-side alignment with `"left"` and reveals the
+  whole width on the right; the centred split needed a camera-inset hack that
+  fell over at every map boundary. Plumbed through the compositor
+  (`gr_wide_configure(wide_w, left_offset, native_w)` — the renderers no longer
+  assume `native_w = wide_w - 2*offset`; SW/GL/VK), the draw-area widen, the
+  cull helpers (`psx_ws_cull_*` per side; overlay preamble too, ABI v22 adds
+  `ws_x_margin_left/right` callbacks), `[widescreen.bg2d]` (left/right column
+  counts), HUD corner re-anchoring, fullscreen-rect / backdrop stretch, and the
+  mod API (`psx_mod_widescreen_x_margin_left/right`). `psx_ws_x_margin()`
+  keeps its symmetric per-side meaning, so every existing (centred / 3D) title
+  is byte-identical. `nw_anchor_gate = "bg2d"` applies the anchor only on
+  frames the bg2d tile renderer built (menus / loading screens drawn as fixed
+  4:3 layouts stay centred; the flip is re-derived before every draw command),
+  and `psx_mod_widescreen_set_world()` lets a plugin veto it for screens it
+  knows are not the world. `gpu_state.ws` reports the split.
+* **`[[widescreen.cull.edge]]`** — full-word-guarded `ADDI/ADDIU/SUBU` sites
+  for a 2D title's camX-relative keep-alive / on-screen / spawn bounds that
+  carry the 4:3 width as immediates; `side = left|right|width` moves them by
+  the per-side reveal (identity at 4:3). Codegen + overlay shards + the
+  dirty-RAM interpreter share the arithmetic; part of the overlay cache
+  identity. Without it a widened spawn window spawned enemies the game's own
+  keep-alive killed on the same frame (measured with `wtrace`).
+* **Headless widescreen** — the game-entry engage step now runs before the
+  headless early-out and `headless_capture_present` renders the wide
+  compositor surface, so `[widescreen]` work is verifiable with a script
+  (`present_capture` = the wide frame). Previously a headless run always
+  reported `mode 0`, indistinguishable from a broken config.
+* **`BOOT_STATE_ANY_BUILD`** — user savestate slots and bookmarks accept a
+  differing build key (codegen hash / overlay ABI / codegen version): the image
+  is a complete hardware snapshot and host-side state is re-derived from guest
+  RAM (as `boot_state.h` already documents), so a recompiler rebuild no longer
+  orphans every save the player has taken. The fast-boot snapshot, rewind ring
+  and netplay pins keep the strict key; BIOS checksum and entry PC are always
+  required. Surfaced by this very change: the emitter edit bumped the hash and
+  every existing bookmark refused to load.
+
+### Verification (Mega Man 8, headless)
+
+Left 320 columns of the left-anchored wide frame pixel-identical to the 4:3
+frame at the intro stage start; five stage starts show authored map across
+426 px; pause menu / title / stage select / NOW LOADING centred with the flip on
+the black wipe frame (captured every 3–5 frames both ways); actor telemetry:
+spawns at `dx_cam 462–469` vs 4:3 `355–367`, despawns `448–460` vs `331–343`,
+no per-frame spawn/kill flicker; mod off: every margin 0, 320×240. Recompiler
+unit tests (`recompiler_patch_test`, `full_function_emitter_test`,
+`video_enhancement_settings_test`, `l2_structural_test`) pass; the
+source-grep launcher tests (`launcher_vulkan_option`, `mod_load_acceleration`)
+already failed at the previous pin (unrelated strings).

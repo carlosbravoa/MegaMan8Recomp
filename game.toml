@@ -148,6 +148,23 @@ fmv_pack = "game-assets/movies/pack"
 offer   = true
 full_2d = true
 
+# Anchor the native-wide reveal on the LEFT: the wide frame's left edge is
+# exactly the 4:3 left edge and the whole 106 px is revealed on the right. MM8's
+# gameplay is authored against that left edge (the camera clamps at the map's
+# left boundary, the player is walled at the screen edge, stages start with the
+# camera at Xmin), so a centred reveal either shows un-authored map on the left
+# at every boundary or needs the camera moved off its authored positions to
+# hide it (the retired camera-inset hack — foreground and playable area then
+# disagreed). Left-anchored, background / foreground / walkable area line up
+# with 4:3 by construction and the player simply sees further ahead.
+nw_anchor = "left"
+# ...but only while the stage world is drawn (frames the [widescreen.bg2d]
+# tile renderer ran). The pause menu, title, stage select, results and boss
+# intro draw their own fixed 320-wide layouts; centred, they sit in the middle
+# of the wide frame with the reveal split both sides (the pause wipe hides the
+# flip: the stage renderer stops on the black frame).
+nw_anchor_gate = "bg2d"
+
 # HUD re-anchoring. MM8 builds the player health/weapon/life HUD into a
 # dedicated double-buffered GP0 packet arena, separate from the background tile
 # arena (0x801C7000+) and the sprite arenas. Commands sourced from this range
@@ -178,6 +195,58 @@ nw_left_hud_packet_hi = "0x80152E00"
 [widescreen.cull]
 auto_screen_x = true
 screen_h_imms = ["0x100"]
+
+# Screen-EDGE bounds in the game logic (docs/WIDESCREEN.md "Off-screen logic").
+# MM8 keeps actors alive, flags them on-screen and spawns/parks them relative
+# to camX with the 4:3 width baked in as immediates: keep-alive
+# [camX-56, camX+376) (func_801047C8 / the parametric func_80104820 and
+# func_8012D274), on-screen (`inscrn`, actor+5) [camX-32, camX+352)
+# (func_80104A68 / parametric func_80104AEC, func_8012D1B0), objects placed at
+# the right edge (camX+336 / +352), and per-stage overlay code with the same
+# idiom. Left-anchored the left bounds are untouched (left margin 0) and the
+# right bounds move out by the 106 px reveal, so an actor lives, acts and
+# spawns just off the WIDE edge exactly as it did off the 4:3 one — without
+# this the reveal showed enemies popping in/out mid-screen at x 336..426
+# (the spawn strip re-armed them every frame while the keep-alive killed them).
+# Full-word guarded: an overlay entry only applies where the stage's code
+# holds exactly that instruction. Y bounds are deliberately not listed.
+edge = [
+  # func_801047C8 keep-alive (fixed margins)
+  { address = "0x801047D4", expected = "0x24A3FFC8", side = "left"  },  # addiu v1,a1,-56
+  { address = "0x801047E4", expected = "0x24A30178", side = "right" },  # addiu v1,a1,376
+  # func_80104820 keep-alive (parametric margin)
+  { address = "0x80104834", expected = "0x00E51823", side = "left"  },  # subu v1,a3,a1   camX-mx
+  { address = "0x80104844", expected = "0x24A30140", side = "right" },  # addiu v1,a1,320 camX+mx+320
+  # func_80104A68 inscrn (fixed)
+  { address = "0x80104A80", expected = "0x2442FFE0", side = "left"  },  # addiu v0,v0,-32
+  { address = "0x80104A94", expected = "0x24620180", side = "width" },  # addiu v0,v1,384 (from the left bound)
+  # func_80104AEC inscrn (parametric)
+  { address = "0x80104B04", expected = "0x00451023", side = "left"  },  # subu v0,v0,a1
+  { address = "0x80104B24", expected = "0x24420140", side = "width" },  # addiu v0,v0,320 (from the left bound)
+  # func_8012D1B0 inscrn (parametric, second copy)
+  { address = "0x8012D1F4", expected = "0x00431023", side = "left"  },  # subu v0,v0,v1
+  { address = "0x8012D214", expected = "0x24420140", side = "width" },  # addiu v0,v0,320 (from the left bound)
+  # func_8012D274 keep-alive (parametric, second copy)
+  { address = "0x8012D284", expected = "0x00E51823", side = "left"  },  # subu v1,a3,a1
+  { address = "0x8012D294", expected = "0x24A30140", side = "right" },  # addiu v1,a1,320
+  # actor parked 16 px past the right edge (func_8011BFxx)
+  { address = "0x8011C01C", expected = "0x24420150", side = "right" },  # addiu v0,v0,336
+  # stage overlays (OVL/STAGEnn.BIN at 0x801D8000; word-guarded per stage)
+  { address = "0x801DDAFC", expected = "0x24420178", side = "right" },  # STAGE00 camX+376 < x -> state 2
+  { address = "0x801E07F0", expected = "0x24420178", side = "right" },  # STAGE00 camX+376 < x
+  { address = "0x801E5230", expected = "0x2442FFC8", side = "left"  },  # STAGE01 x < camX-56
+  { address = "0x801E6080", expected = "0x24420160", side = "right" },  # STAGE03 spawn at camX+352
+  { address = "0x801E5D80", expected = "0x2482FFC8", side = "left"  },  # STAGE04 keep-alive camX-56
+  { address = "0x801E5D8C", expected = "0x24820178", side = "right" },  # STAGE04 keep-alive camX+376
+  { address = "0x801E40C4", expected = "0x24420140", side = "right" },  # STAGE06 camX+320 < x
+  { address = "0x801E4250", expected = "0x24420140", side = "right" },  # STAGE06 x < camX+320
+  { address = "0x801E0138", expected = "0x2444FFD0", side = "left"  },  # STAGE07 window camX-48
+  { address = "0x801E013C", expected = "0x24480170", side = "right" },  # STAGE07 window camX+368
+  { address = "0x801DB3BC", expected = "0x2442FFC0", side = "left"  },  # STAGE09 spawn at camX-64
+  { address = "0x801E4340", expected = "0x24420160", side = "right" },  # STAGE0B spawn at camX+352
+  { address = "0x801E5B10", expected = "0x24420160", side = "right" },  # STAGE0B spawn at camX+352
+  { address = "0x801F447C", expected = "0x2442FFC0", side = "left"  },  # STAGE0D spawn at camX-64
+]
 
 # Background tile loop. MM8's renderer is func_800F98D8: 21 columns of 16x16
 # tiles, two layers, packets built in scratchpad and DMA'd from 0x801CB400.

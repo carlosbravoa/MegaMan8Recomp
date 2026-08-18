@@ -60,6 +60,9 @@ Important files:
 - `tools/mm8_headless.sh`: windowless, unpaced scripted run (load a save slot,
   screenshot, capture the filtered present, write a telemetry bundle, exit) —
   the default way to verify things without opening the game.
+- `tools/ws_headless.sh`: widescreen check without a window — enables the mod,
+  resumes a bookmark / slot / cold boot, captures the wide present + `gpu_state.ws`
+  (`--off` for the 4:3 reference).
 - `tools/video_filter_check.py`: proves the OpenGL video-filter shaders match
   the CPU reference pixel-for-pixel on a live frame.
 - `docs/VIDEO_FILTERS.md`: the filter set and how it is verified.
@@ -91,7 +94,7 @@ code paths halt loudly rather than misbehave silently (see `ISSUES.md`).
 | Audio / CD-DA | Works (user-confirmed: SPU/XA mix + CD-DA tracks) |
 | Memory-card save / load | Works (user-confirmed end-to-end) |
 | Renderers | OpenGL default; Software available; Vulkan builds as a stub without `glslc` |
-| Widescreen | **Opt-in 16:9 launcher toggle** (Mods page, default off) — native-wide 426x240, full-width background, HUD anchored to the wide edge (ISSUES #14) |
+| Widescreen | **Opt-in 16:9 launcher toggle** (Mods page, default off) — native-wide 426x240 anchored on the 4:3 left edge (the reveal is on the right), full-width background, HUD anchored, enemy spawn / keep-alive / on-screen bounds moved with the reveal, menus centred (ISSUES #14, #16; `docs/WIDESCREEN.md`) |
 | Video filters | Scale2x/3x, 2xSaI / Super 2xSaI / Super Eagle, xBR 2x–4x, sharp bilinear, scanlines, CRT — launcher Display → Video filter, ESC menu → VIDEO FILTER, `[video] filter`; GL shaders verified against the CPU reference (ISSUES #15) |
 | Bug reports | **F9** writes a telemetry bundle (screenshots + reloadable savestate + report.json) to `saves/bugreports/` (ISSUES #17) |
 | Headless / scripted runs | `tools/mm8_headless.sh` — no window, seconds long, drives the debug-server vocabulary from a script (ISSUES #18) |
@@ -245,8 +248,9 @@ misses, GPU/overlay/autocompile status). Attach the folder to your report —
   re-applied after `git submodule update` (see `upstream/README.md`).
 - **Vulkan** builds as a stub without `glslc` and does not run the video filters.
 - **GL frame interpolation** never swaps on Wayland/Mesa here (framework, ISSUES #16).
-- **Widescreen** is experimental: background fill and HUD anchoring are in,
-  stage-start reveal and some scrollers still need work (`docs/WIDESCREEN*.md`).
+- **Widescreen** is experimental: left-anchored reveal, background fill, HUD
+  anchoring and the off-screen actor logic are in; boss rooms and some
+  stage-local edge idioms are unverified (`docs/WIDESCREEN.md`).
 - **Symbols**: ~73 of 7,292 functions named; `docs/SYMBOLS.md` describes the
   evidence-only naming pipeline.
 - **OpenBIOS** backend is linked but not exercised; **Windows** builds untested here.

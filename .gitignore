@@ -77,3 +77,7 @@ starvation_dump.jsonl
 
 # Local agent rules (not part of the repo)
 CLAUDE.md
+
+# local test variants of game.toml (tools/ws_headless.sh --game, B9 recipes)
+game.*.toml
+movies/

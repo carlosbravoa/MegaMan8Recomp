@@ -198,11 +198,12 @@ number:
 * **`screenshot` is native VRAM.** Widescreen only shows up once the frame is
   actually engaged; before that you get 320x240 and will conclude widescreen is
   broken when it simply has not started. Widescreen engages at *game entry*, not
-  at boot.
+  at boot. It DOES engage headless now (`tools/ws_headless.sh`; `present_capture`
+  is the wide frame, `gpu_state.ws` the truth).
 * **Distinct-colour count is not a blackness test.** A visually black frame
   routinely reports ~150 distinct colours from dark noise. Use mean brightness,
   or the fraction of dark pixels.
-* **Contiguous dark COLUMNS miss diagonal corruption.** The wedge artifact in
-  ISSUES #16 leaves most columns partially bright, so a "black bar width" metric
-  reports a small number while half the screen is black. Measure the dark-pixel
-  fraction over the whole frame.
+* **Contiguous dark COLUMNS miss diagonal corruption.** The wedge artifact of
+  the old ISSUES #16 left most columns partially bright, so a "black bar width"
+  metric reports a small number while half the screen is black. Measure the
+  dark-pixel fraction over the whole frame.

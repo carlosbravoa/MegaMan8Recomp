@@ -11,7 +11,7 @@ before it can be sized.
 |---|---|
 | Static recompile of `SLUS_004.53`, boots to gameplay, 0 dispatch misses (15-min attract soak) | ✅ |
 | Streamed overlays (OVL/*.BIN) captured → compiled shards, in-session autocompile (Linux) | ✅ |
-| Widescreen 16:9 (native-wide bg2d), HUD anchoring; stage-start geometry glitch | ✅ / ⬜ (#16) |
+| Widescreen 16:9 (native-wide, **left-anchored** reveal, bg2d, HUD anchoring, edge-bound + spawn-window logic; centred menus) | ✅ (#16 resolved 2026-08-18) |
 | Video filters, F9 bug bundles, headless script mode | ✅ |
 | Symbols/annotations pipeline; actor / hitbox / camera structs documented | ✅ (73 named of 7,292 — ongoing) |
 | **Extracted disc tree** — game runs from `game-assets/disc/` without the bin/cue, byte-identical while pristine, files editable/relocatable, LBA table rewritten | ✅ |
@@ -103,8 +103,13 @@ so far.
 
 ## 3. Track C — Engine-side enhancements (after A/B; each its own decision)
 
-* ⬜ Widescreen #16 (stage-start geometry corruption) — root cause narrowed to
-  the parallax builder at stage start; finish before HD packs stress it.
+* ✅ Widescreen #16 — resolved by anchoring the reveal on the left
+  (`[widescreen] nw_anchor = "left"`, gate + world veto for menus) and moving
+  the game's off-screen logic (keep-alive / inscrn / spawn strip / edge parks,
+  main EXE + per-stage overlays) with the reveal (2026-08-18,
+  `docs/WIDESCREEN.md`). Left over: overlay-local edge idioms not yet
+  understood (listed there), boss rooms unverified, in-stage text (READY /
+  boss names) stays at its 4:3 position, the wipes cover only 320 px.
 * ⬜ Higher internal *geometry* precision (sub-pixel sprite positions,
   16.16 actor positions already exist) — only meaningful once S× art exists.
 * ⬜ Optional 60 Hz smoothing / frame pacing tweaks (framework: GL frame

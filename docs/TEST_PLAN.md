@@ -150,7 +150,7 @@ window** and answer:
 - [ ] Is it a plain **black bar down the left side**, or **diagonal black wedges**
       (a bowtie shape) across the frame?
 
-This decides the diagnosis in `docs/WIDESCREEN_STAGE_START.md`. My captures show
+This decided the diagnosis of the old stage-start defect (superseded: the reveal is left-anchored now, see `docs/WIDESCREEN.md`). My captures show
 wedges, you described a bar, and the two imply completely different causes — the
 capture path composites the wide frame itself, so it may be lying to me.
 

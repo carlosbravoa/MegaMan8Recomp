@@ -82,50 +82,39 @@ group and Linux additionally arms `PR_SET_PDEATHSIG`.
 pre-building a full cache, e.g. the 14-stage tour); it is no longer required
 for ordinary play.
 
-## #16 — Widescreen corrupts geometry at a stage START — OPEN (root cause narrowed)
+## #16 — Widescreen: black column / shifted foreground at a stage START — RESOLVED (2026-08-18, left-anchored reveal)
 
-At the beginning of a stage the 16:9 frame renders as large black wedges (a
-bowtie across the screen) with the stage visible only in the remaining
-triangles. Reported by the player as "a big black bar on the left"; the left
-run really is black, but the rest of the corruption is diagonal, which a
-per-column darkness metric does not see (that cost real time — measure dark
-pixel FRACTION, not contiguous dark columns).
+Symptom as the player saw it: at every stage start the foreground was moved
+left of the walkable area with a black column behind it (and, in captures, the
+diagonal "wedges" of the earlier notes). Root cause was the **design**, not a
+bug: the reveal was split 53 px each side, so at every map boundary the left
+reveal asked for map that was never authored, and the camera-inset hook that
+tried to hide it moved the camera off the game's authored positions (bounded
+by a stage's authored travel — 24 px on stage 02 against a 53 px reveal).
 
-**Isolated to widescreen.** Same build, same stage, same entry:
+Fix: `[widescreen] nw_anchor = "left"` (new framework option) — the wide
+frame's left edge IS the 4:3 left edge and the whole 106 px is revealed on the
+right; the camera-inset hook is gone. The left 320 columns of the wide frame
+are pixel-identical to 4:3 (verified on the intro start), and the five stage
+starts we have bookmarks for show authored map across all 426 px. The pause
+menu / title / stage select / NOW LOADING stay centred (`nw_anchor_gate =
+"bg2d"` + the plugin's world gate). See `docs/WIDESCREEN.md`.
 
-| | frame | dark pixels |
-|---|---|---|
-| widescreen OFF | 320x240 | **0%** — clean |
-| widescreen ON  | 426x240 | **44-49%** — wedges |
+The same pass fixed the **enemy pop-in** on the revealed right side: with only
+the spawn window widened, entries between camX+376 (the game's keep-alive
+bound) and the widened window were spawned and killed every frame; the
+keep-alive / on-screen / edge-park bounds are now moved with the reveal
+(`[[widescreen.cull.edge]]` sites, main EXE + per-stage overlays) and the spawn
+strip is translated rather than widened. Actor telemetry: spawns at
+`dx_cam ≈ 462–469` (4:3: 355–367), the intro's rolling shell kills the Metools
+it rolls over again.
 
-Mid-stage 16:9 is clean (`black L=0 R=0` measured while scrolling), so this is
-specific to the camera sitting at a stage's left boundary.
-
-**Ruled out:**
-
-* Not the camera-inset mod hooks — the wedges persist with the inset disabled
-  entirely (probe build: hook returns immediately, corruption unchanged).
-* Not `[widescreen.bg2d] startcol` going negative. That IS a real hazard for a
-  direct-index title (an unmasked `startcol` has no ring to wrap into, so the
-  expansion can index before the map), and a clamp was written and tested — it
-  changed nothing here, so it was reverted rather than left in as an unproven
-  framework change. Worth revisiting as correctness, not as this fix.
-
-**Prime suspect:** `[widescreen.cull] auto_screen_x`. It widens MM8's own
-screen-extent reject (`func_800FA050`, `slti v0,v0,320`) so primitives the game
-would have discarded are now produced. At a stage start the parallax builder
-(`func_800F90D4`) is working with layer state that is not fully initialised, so
-the primitives it emits are plausibly degenerate — normally rejected, and now
-drawn as large triangles. Next step: force `psx_ws_x_margin()` to 0 for the
-cull sites only (`gpu_ws_set_margin_override(0)` exists as a live probe) and see
-whether the wedges disappear while the reveal stays.
-
-**Camera inset, separately:** the inset now runs, but is bounded by the stage's
-authored travel. Stage 02 starts with `Xmin=256, Xmax=280` — 24 px against a
-53 px reveal — so the camera cannot be inset the full margin and ~29 px of the
-reveal still hangs off the map. Raising `Xmax` to make room was tried and
-reverted: that bound also feeds the tile fetch, and lifting it walked the
-background off the end of the map.
+Side effect worth knowing: the recompiler change bumped the codegen hash /
+overlay ABI, which the savestate loader used to treat as fatal — that would
+have orphaned every user savestate and bookmark. User slots and bookmarks now
+accept a differing build key (`BOOT_STATE_ANY_BUILD`; the image is a complete
+hardware snapshot), the fast-boot snapshot / rewind ring / netplay pins keep
+the strict key.
 
 ## #15 — Stage-select transition showed a black stage once — NOT REPRODUCED
 

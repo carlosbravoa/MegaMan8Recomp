@@ -39,7 +39,7 @@ done
 # title ("MegaMan8 Recompiled" -> MegaMan8_Recompiled) so an MM8 run never
 # collides with another PSX title's process.
 exe=$root/$build_dir/MegaMan8_Recompiled
-game=$root/game.toml
+game=${MM8_GAME:-$root/game.toml}   # MM8_GAME: an alternate game.toml (test variants)
 bios=${MM8_BIOS:-$root/game-assets/psx-bios-SCPH1001/scph1001.bin}
 # Disc source, in order: MM8_DISC (explicit image or tree), the extracted disc
 # tree game-assets/disc/ (tools/extract_disc.sh; psxrecomp/docs/DISC_TREE.md)
