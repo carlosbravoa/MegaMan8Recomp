@@ -433,7 +433,7 @@ present capture, optional `--bug-report`). Verified: slot load → screenshot �
 xbr2x/scale3x present capture → bug-report bundle → clean exit 0 in seconds,
 no window. Patch `upstream/0006-…`.
 
-## #19 — Black screen mid-play, audio + input alive, rewind recovers — OPEN (awaiting an F9 bundle)
+## #19 — Black screen mid-play, audio + input alive, rewind recovers — MITIGATED (root cause located, lost-return recovery in place)
 
 Reported 2026-08-17 (first seen 2026-08-16, i.e. **before** the texture-pack
 work — the pack is not a suspect): after a while of normal play the picture
@@ -485,6 +485,25 @@ supersampling 1, scanlines, stage 04 approaching the boss):**
   reproduce headless (unpaced software, 13k frames) nor in a 3-minute windowed
   OpenGL run with rewind on.
 
+**Root cause found (three F9 bundles of 2026-08-18, all in the same stage):**
+the escape ring shows, at the black-screen frame, `SAFETY_NET_RESUME` with
+`ra = 0x801DDFF0` every time: the game thread was returning from
+`jal 0x80107204` at `0x801DDFE8` in the STAGE04 overlay (a probe called three
+times in a row) and the dispatch chain returned to the scheduler with `pc == 0`
+— a lost return obligation across the overlay/dirty-RAM call path (that
+region has stale-shard / interp-fallback activity) — and the scheduler's
+one-level safety net then resumed the *yielder* (root) instead of the game
+thread → root ran early → sleep counter underflow → black. No IRQ involved
+(the IRQ contexts around it are root's VSync waits).
+
+**Fix (psxrecomp, framework-generic):** when a yielded-to running thread's
+dispatch returns pc==0 and its `$ra` is a sane game re-entry, the scheduler
+resumes *that thread at `$ra`* (registers as they are = what its `jr $ra`
+would have done) instead of parking it — escape reason 101 /
+`lost_return_resumes` in `sched_escape_ring` and the F9 bundle. The
+underlying lost-return in the overlay call path is still to be found; the
+counter now tells us each time it happens without costing a black screen.
+
 **Telemetry added (psxrecomp 2026-08-17):** every F9 bundle now carries the
 scheduler escape ring (`sched_escape_ring`, incl. `safety_net_resumes` and a
 distinct reason 100 / thread event 40 for that path), the last 2048 thread
@@ -493,3 +512,12 @@ events, IRQ contexts, CD/IRQ/DMA state, registers and hot PCs;
 flags where the per-frame switch cadence breaks. **Next time it happens:
 press F9 before rewinding** and the bundle will show which escape put the
 root thread back early.
+
+## #20 — Host menus leaked their confirm key/button into the game — FIXED
+
+Saving a slot with Enter opened the game's pause menu; loading a state into
+the stage select and confirming entered a stage. Fix (psxrecomp main.cpp,
+`host_menu_input_isolated`): while the savestate menu or the ESC system menu
+is open the game sees a released pad, and after either closes (or a slot
+save/load is submitted) the pad stays released until every key / button is
+up (bounded 3 s) — the existing post-load guard stays on top of that.
