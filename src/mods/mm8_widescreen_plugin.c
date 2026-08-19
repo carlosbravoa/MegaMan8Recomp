@@ -2,6 +2,7 @@
 #include "cpu_state.h"
 
 #include <stdint.h>
+#include <string.h>
 
 /*
  * Mega Man 8 — widescreen activation plugin.
@@ -76,11 +77,99 @@ static void mm8_widescreen_tile_arena(void) {
         psx_mod_write_word(MM8_TILE_PKT_PTR, s_tile_arena + MM8_TILE_ARENA_BYTES);
 }
 
+/*
+ * Camera option ("camera": left / center / smart) — where the wide window sits
+ * over the world, decided from the stage's authored camera bounds (camera
+ * struct 0x801D2914: camX +6, Xmax +0x1A, Xmin +0x1C; the map exists for at
+ * least [Xmin, Xmax+320]):
+ *
+ *   left    anchor 1: the wide frame's left edge is the 4:3 left edge, the
+ *           whole reveal on the right; columns beyond Xmax+320 are bordered.
+ *   center  anchor 0: half the reveal each side; columns beyond the map on
+ *           either side (every stage start, every room end, vertical shafts)
+ *           are bordered — the classic 4:3-game-on-a-wide-screen frame.
+ *   smart   anchor 3 (dynamic): L = clamp(53, 106 - dr, dl) with dl = camX -
+ *           Xmin, dr = Xmax - camX: left-anchored at a stage start, opening
+ *           to centred as the camera moves right (the world's left edge stays
+ *           put until the window is centred), sliding to right-anchored as the
+ *           end of the room approaches; a room with no horizontal travel sits
+ *           centred with borders both sides. The game logic uses the widest
+ *           reveal each side can reach, so the window's position never changes
+ *           what spawns, lives or is on-screen.
+ *
+ * Voids (border columns) for any L: left = max(0, L - dl), right =
+ * max(0, (106 - L) - dr). Reported each world frame from the tile-renderer
+ * hook; non-world frames (menus) are centred by the framework and unbordered.
+ */
+#define MM8_LAYER0_CAMX_ 0x801D291Au
+#define MM8_CAM_X_MAX 0x801D292Eu   /* camera struct + 0x1A */
+#define MM8_CAM_X_MIN 0x801D2930u   /* camera struct + 0x1C */
+
+static int s_camera_mode = 3;        /* 1 left, 0 center, 3 smart */
+
+static void mm8_widescreen_place_window(void) {
+    const int32_t extra = psx_mod_widescreen_extra();
+    if (extra <= 0) return;
+    const int32_t camx = (int16_t)psx_mod_read_half(MM8_LAYER0_CAMX_);
+    const int32_t xmin = (int16_t)psx_mod_read_half(MM8_CAM_X_MIN);
+    const int32_t xmax = (int16_t)psx_mod_read_half(MM8_CAM_X_MAX);
+    int32_t dl = camx - xmin, dr = xmax - camx;
+    if (dl < 0) dl = 0;
+    if (dr < 0) dr = 0;
+    /* Parallax layers run out of map sooner than the camera bounds say: every
+     * layer's map starts at Xmin but a far layer scrolls at a fraction f of
+     * the camera (intro: 1, 1/2, 1/4 — scroll_L = Xmin + f_L*(camX-Xmin)), so
+     * it has only f_L*dl of map to the left of its own edge and f_L*dr to the
+     * right. Take the tightest layer: the window opens at the slowest layer's
+     * pace and no layer is ever asked for columns it does not have (the
+     * 14 px black strip at the top-left of a centred frame near a stage start
+     * was the sky layer's map edge). Layers off (+0 == 0) are skipped. */
+    {
+        int32_t dl_eff = dl, dr_eff = dr;
+        for (int L = 1; L < 3; L++) {
+            const uint32_t layer = 0x801D2914u + 0x30u * (uint32_t)L;
+            if (psx_mod_read_byte(layer) == 0) continue;
+            const int32_t sc = (int16_t)psx_mod_read_half(layer + 6u);
+            int32_t dlL = sc - xmin;
+            if (dlL < 0) dlL = 0;
+            if (dlL > dl) dlL = dl;
+            if (dlL < dl_eff) dl_eff = dlL;
+            /* right slack scales with the observed parallax ratio */
+            int32_t drL = dl > 0 ? (int32_t)((int64_t)dr * dlL / dl) : dr;
+            if (drL < dr_eff) dr_eff = drL;
+        }
+        dl = dl_eff; dr = dr_eff;
+    }
+    int32_t L;
+    if (s_camera_mode == 1) L = 0;
+    else if (s_camera_mode == 0) L = extra / 2;
+    else {
+        const int32_t lo = extra - dr, hi = dl;        /* L must satisfy lo <= L <= hi */
+        L = extra / 2;
+        if (lo <= hi) { if (L < lo) L = lo; if (L > hi) L = hi; }
+        /* else: not enough map either side — stay centred, border both */
+    }
+    int32_t vl = L - dl, vr = (extra - L) - dr;
+    if (vl < 0) vl = 0;
+    if (vr < 0) vr = 0;
+    psx_mod_widescreen_set_window(s_camera_mode == 3 ? L : -1, vl, vr);
+}
+
 static void mm8_widescreen_activate(void) {
     gpu_ws_mmx6_set_freshfix(0);
     (void)psx_mod_set_fixed_display_aspect(16u, 9u);
     if (!s_tile_arena)
         s_tile_arena = psx_mod_alloc_gpu_dma_memory(2u * MM8_TILE_ARENA_BYTES, 16u);
+    {
+        char v[32];
+        s_camera_mode = 3;
+        if (psx_mod_option_value("mm8.enhancement.widescreen", "widescreen", "camera", v, (uint32_t)sizeof v)) {
+            if (!strcmp(v, "left")) s_camera_mode = 1;
+            else if (!strcmp(v, "center")) s_camera_mode = 0;
+            else if (!strcmp(v, "smart")) s_camera_mode = 3;
+        }
+        psx_mod_widescreen_set_anchor(s_camera_mode);
+    }
 }
 
 /*
@@ -176,6 +265,7 @@ static void mm8_widescreen_world_gate(struct CPUState* cpu, uint32_t address) {
     (void)cpu; (void)address;
     psx_mod_widescreen_set_world(psx_mod_read_byte(MM8_PLAYER_ACTOR) != 0);
     mm8_widescreen_tile_arena();
+    mm8_widescreen_place_window();
 }
 
 PSX_MOD_CONSTRUCTOR(mm8_register_widescreen_plugin) {

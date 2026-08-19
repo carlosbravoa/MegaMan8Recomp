@@ -157,13 +157,18 @@ full_2d = true
 # hide it (the retired camera-inset hack — foreground and playable area then
 # disagreed). Left-anchored, background / foreground / walkable area line up
 # with 4:3 by construction and the player simply sees further ahead.
-nw_anchor = "left"
+nw_anchor = "dynamic"   # the widescreen plugin's Camera option picks left / center / dynamic ("smart") at activation
 # ...but only while the stage world is drawn (frames the [widescreen.bg2d]
 # tile renderer ran). The pause menu, title, stage select, results and boss
 # intro draw their own fixed 320-wide layouts; centred, they sit in the middle
 # of the wide frame with the reveal split both sides (the pause wipe hides the
 # flip: the stage renderer stops on the black frame).
 nw_anchor_gate = "bg2d"
+# Border painted over presented columns that fall beyond the authored map
+# (stage starts / room ends under the centred and smart cameras, vertical
+# shafts). Any PNG; scaled to the wide frame; the plugin reports the void
+# columns from the camera bounds.
+nw_border = "assets/widescreen_border.png"
 
 # HUD re-anchoring. MM8 builds the player health/weapon/life HUD into a
 # dedicated double-buffered GP0 packet arena, separate from the background tile

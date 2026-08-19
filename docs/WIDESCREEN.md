@@ -30,6 +30,34 @@ Engaged state: `mode = 2`, `nw_extra = 106`, `nw_left = 0`, `nw_right = 106`,
 `nw_anchor = 1` — a **426 × 240** frame (exactly 16:9 at 240 lines), and the
 whole 106 px is revealed **on the right**.
 
+### Camera — three ways to place the wide window (launcher option)
+
+The widescreen mod has a **Camera** option (Mods page → Widescreen → Camera);
+all three keep the game's logic identical (see "Off-screen logic") and differ
+only in where the 426-px window sits over the world and what fills columns the
+stage has no map for:
+
+| Camera | window | map-less columns |
+|---|---|---|
+| **Smart** (default) | `L = clamp(53, 106−dr, dl)` px of the reveal on the left, `dl`/`dr` = room left / right of the camera: left-anchored at a stage start, opening to centred as you walk (the world's left edge stays put until centred — it opens at the pace of the slowest parallax layer, ~200 px of walking on the intro), sliding to right-anchored as a room's end nears; rooms with no horizontal travel sit centred | painted with `assets/widescreen_border.png` |
+| **Centered** | 53 px each side | bordered: every stage start, room ends, vertical shafts — the classic 4:3-on-wide frame |
+| **Left edge anchored** | the 4:3 left edge is the wide left edge, all 106 px on the right | right columns beyond `Xmax+320` bordered |
+
+`dl`/`dr` come from the camera struct (`0x801D2914`: camX +6, Xmax +0x1A,
+Xmin +0x1C; the map exists for `[Xmin, Xmax+320]`) tightened per parallax
+layer (`layer+6` scroll: a far layer at parallax ¼ has only ¼ of the slack —
+without that the sky layer's map edge showed as a black strip near a stage
+start). The plugin reports the window and the void widths each world frame
+(`psx_mod_widescreen_set_window`); the framework slews the window 3 px/frame
+and snaps on world entry; menus / loading are centred and unbordered.
+`tools/ws_headless.sh --camera smart|center|left` selects it headless;
+`gpu_state.ws` shows `nw_left/nw_right`, `nw_dyn_target`, `nw_void`.
+
+Verified: Smart opens 0 → 53 over ~150 frames of walking on the intro with
+no seam or black strip; Centered borders 53 px left on the intro / Tengu /
+Clown starts (and 29 px right on Clown Man, whose first room travels 24 px);
+Left is the previous behaviour.
+
 ### Left-anchored reveal — the design
 
 The wide frame's left edge **is** the 4:3 left edge (`[widescreen]

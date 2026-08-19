@@ -9,14 +9,14 @@
 # since the framework's engage step moved ahead of the headless early-out.
 #
 #   bash tools/ws_headless.sh [--build-dir build-debug] [--out DIR]
-#        [--bookmark "Intro stage" | --slot N | --cold] [--frames N] [--off]
+#        [--bookmark "Intro stage" | --slot N | --cold] [--frames N] [--off] [--camera smart|center|left]
 #        [--script 'steps'] [-- runtime args]
 #
 # --off runs the same thing with the mod disabled (4:3 reference). Exit 3 = an
 # expect: failed. The previous mods/state.toml is restored afterwards.
 set -euo pipefail
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-build_dir=build-debug; out=""; bookmark="Intro stage"; slot=""; cold=0; frames=120; on=1; script=""; extra=()
+build_dir=build-debug; out=""; bookmark="Intro stage"; slot=""; cold=0; frames=120; on=1; script=""; camera="smart"; extra=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --) shift; extra=("$@"); break ;;
@@ -27,6 +27,7 @@ while [ "$#" -gt 0 ]; do
         --cold) cold=1; shift ;;
         --frames) frames=$2; shift 2 ;;
         --off) on=0; shift ;;
+        --camera) camera=$2; shift 2 ;;   # widescreen mod option: smart | center | left
         --script) script=$2; shift 2 ;;
         -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -46,6 +47,8 @@ format_version = 2
 package_id = "mm8.enhancement.widescreen"
 id = "widescreen"
 enabled = $([ "$on" = 1 ] && echo true || echo false)
+[feature.values]
+camera = "$camera"
 EOT
 S="wait:$frames"
 [ -n "$slot" ] && S="wait:30;{\"cmd\":\"savestate\",\"op\":\"load\",\"slot\":$slot};expect:\"ok\":true;wait:$frames"
