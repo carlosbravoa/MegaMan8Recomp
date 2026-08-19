@@ -53,6 +53,14 @@ and snaps on world entry; menus / loading are centred and unbordered.
 `tools/ws_headless.sh --camera smart|center|left` selects it headless;
 `gpu_state.ws` shows `nw_left/nw_right`, `nw_dyn_target`, `nw_void`.
 
+The border (`assets/widescreen_border.png`, 426×240, tiled from
+`assets/widescreen_border_tile.png`) is the NOW LOADING screen's Metool pattern
+— one 128×64 cell lifted from a native capture of that screen (`screenshot`
+during the load; the pattern's exact period is 128×64, verified pixel-for-pixel
+on the capture), phased so a whole Metool sits inside a 53-px strip, tiled
+static and dimmed to 85 % so it reads as a frame. Replace the PNG for a
+different look; any size works.
+
 Verified: Smart opens 0 → 53 over ~150 frames of walking on the intro with
 no seam or black strip; Centered borders 53 px left on the intro / Tengu /
 Clown starts (and 29 px right on Clown Man, whose first room travels 24 px);
