@@ -169,6 +169,10 @@ nw_anchor_gate = "bg2d"
 # shafts). Any PNG; scaled to the wide frame; the plugin reports the void
 # columns from the camera bounds.
 nw_border = "assets/widescreen_border.png"
+# ...and paint the same image into the window's pillarbox side bars when a 4:3
+# frame meets a wide window (widescreen off in fullscreen, menus): the loading
+# screen's Metool pattern instead of black. Movies keep the cinematic black.
+border_43 = true
 
 # HUD re-anchoring. MM8 builds the player health/weapon/life HUD into a
 # dedicated double-buffered GP0 packet arena, separate from the background tile

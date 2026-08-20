@@ -81,3 +81,4 @@ CLAUDE.md
 # local test variants of game.toml (tools/ws_headless.sh --game, B9 recipes)
 game.*.toml
 movies/
+tmp/

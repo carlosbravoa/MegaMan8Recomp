@@ -53,6 +53,20 @@ and snaps on world entry; menus / loading are centred and unbordered.
 `tools/ws_headless.sh --camera smart|center|left` selects it headless;
 `gpu_state.ws` shows `nw_left/nw_right`, `nw_dyn_target`, `nw_void`.
 
+Border-flash protection (a centred fully-bordered frame flashed for ~3 frames
+after a menu close): borders need trusted inputs at every level — the plugin
+holds its report while camX sits outside the bounds, estimates a layer's
+parallax ratio only once the camera has moved ≥ 32 px (at `dl = 1` a slow
+layer's scroll has not ticked and the ratio read 0, collapsing both slacks),
+and the runtime paints only after the same non-zero void pair has been
+reported 10 frames running. The dynamic window itself never snaps mid-play
+(only after ≥ 10 non-world frames — a real menu/stage transition).
+
+With `border_43 = true` (on here) the same image also fills the window's
+pillarbox bars when a **4:3 frame meets a wide screen**: widescreen off in
+fullscreen on a 16:9 monitor. Movies keep the cinematic black bars. GL
+presenter (the default).
+
 The border (`assets/widescreen_border.png`, 426×240, tiled from
 `assets/widescreen_border_tile.png`) is the NOW LOADING screen's Metool pattern
 — one 128×64 cell lifted from a native capture of that screen (`screenshot`

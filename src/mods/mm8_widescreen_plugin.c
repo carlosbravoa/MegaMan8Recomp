@@ -113,6 +113,33 @@ static void mm8_widescreen_place_window(void) {
     const int32_t camx = (int16_t)psx_mod_read_half(MM8_LAYER0_CAMX_);
     const int32_t xmin = (int16_t)psx_mod_read_half(MM8_CAM_X_MIN);
     const int32_t xmax = (int16_t)psx_mod_read_half(MM8_CAM_X_MAX);
+    /* Transitional camera-struct states (menu open/close wipes, scroll-zone
+     * handoffs) briefly hold inconsistent bounds; trusting such a frame
+     * flashed a fully bordered centred frame mid-play. Rule: report NON-ZERO
+     * border columns only once the bounds have been STABLE for a while — a
+     * genuine no-travel room (a boss arena, xmin == xmax == camX) holds its
+     * bounds for minutes and passes after the short delay (behind the door
+     * wipe); a transition flaps them frame to frame and is held out
+     * indefinitely. camX outside the bounds is never sane: hold. */
+    static int32_t s_prev_xmin = 0x7FFFFFFF, s_prev_xmax = 0x7FFFFFFF;
+    static int32_t s_prev_camx = 0x7FFFFFFF;
+    static int32_t s_stable = 0;
+    static int32_t s_camx_moved = 0;    /* camX changed while these bounds live */
+    if (camx < xmin - 32 || camx > xmax + 32 || xmax < xmin) {
+        s_stable = 0;                                   /* not sane: hold */
+        s_camx_moved = 0;
+        s_prev_xmin = s_prev_xmax = 0x7FFFFFFF;
+        return;
+    }
+    if (xmin == s_prev_xmin && xmax == s_prev_xmax) {
+        if (s_stable < 1000) s_stable++;
+        if (camx != s_prev_camx) s_camx_moved = 1;
+    } else {
+        s_stable = 0;
+        s_camx_moved = 0;
+        s_prev_xmin = xmin; s_prev_xmax = xmax;
+    }
+    s_prev_camx = camx;
     int32_t dl = camx - xmin, dr = xmax - camx;
     if (dl < 0) dl = 0;
     if (dr < 0) dr = 0;
@@ -134,9 +161,16 @@ static void mm8_widescreen_place_window(void) {
             if (dlL < 0) dlL = 0;
             if (dlL > dl) dlL = dl;
             if (dlL < dl_eff) dl_eff = dlL;
-            /* right slack scales with the observed parallax ratio */
-            int32_t drL = dl > 0 ? (int32_t)((int64_t)dr * dlL / dl) : dr;
-            if (drL < dr_eff) dr_eff = drL;
+            /* Right slack scales with the observed parallax ratio — which is
+             * only estimable once the camera has moved a real distance. At
+             * dl=1 a slow layer's scroll has not ticked yet and dlL/dl reads
+             * 0, which collapsed dr to 0 and flashed a fully bordered frame
+             * one step off a stage start. Below the threshold leave dr alone:
+             * the window is pinned near the left edge there anyway. */
+            if (dl >= 32) {
+                int32_t drL = (int32_t)((int64_t)dr * dlL / dl);
+                if (drL < dr_eff) dr_eff = drL;
+            }
         }
         dl = dl_eff; dr = dr_eff;
     }
@@ -152,6 +186,12 @@ static void mm8_widescreen_place_window(void) {
     int32_t vl = L - dl, vr = (extra - L) - dr;
     if (vl < 0) vl = 0;
     if (vr < 0) vr = 0;
+    /* Borders need trusted bounds: either the camera has moved within them
+     * (a live room) or they have outlasted any transition wipe (a no-travel
+     * room — boss arena; menu-close wipes hold a look-alike zero-travel state
+     * for ~40 frames with camX frozen, so 90 clears every wipe). */
+    if ((vl > 0 || vr > 0) &&
+        !(s_stable >= 10 && (s_camx_moved || s_stable >= 90))) return;
     psx_mod_widescreen_set_window(s_camera_mode == 3 ? L : -1, vl, vr);
 }
 
