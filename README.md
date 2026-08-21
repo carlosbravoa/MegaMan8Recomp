@@ -60,6 +60,9 @@ Important files:
 - `tools/mm8_headless.sh`: windowless, unpaced scripted run (load a save slot,
   screenshot, capture the filtered present, write a telemetry bundle, exit) —
   the default way to verify things without opening the game.
+- `tools/package_portable.sh`: build a self-contained portable package for
+  another Linux PC (`docs/PORTABLE.md`) — game data, BIOS, precompiled overlay
+  shards and a glibc fallback in one folder; run `./MegaMan8.sh` there.
 - `tools/ws_headless.sh`: widescreen check without a window — enables the mod,
   resumes a bookmark / slot / cold boot, captures the wide present + `gpu_state.ws`
   (`--off` for the 4:3 reference).

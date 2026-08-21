@@ -82,3 +82,7 @@ CLAUDE.md
 game.*.toml
 movies/
 tmp/
+
+# portable packages (tools/package_portable.sh) — contain game data + BIOS
+dist/
+build-portable/
