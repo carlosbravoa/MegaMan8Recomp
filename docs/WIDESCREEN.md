@@ -32,54 +32,68 @@ whole 106 px is revealed **on the right**.
 
 ### Camera — three ways to place the wide window (launcher option)
 
-The widescreen mod has a **Camera** option (Mods page → Widescreen → Camera);
-all three keep the game's logic identical (see "Off-screen logic") and differ
-only in where the 426-px window sits over the world and what fills columns the
-stage has no map for:
+The widescreen mod has a **Camera** option (Mods page → Widescreen → Camera).
+All three keep the game's logic identical (see "Off-screen logic") and differ
+only in where the 426-px window sits over the world:
 
-| Camera | window | map-less columns |
+| Camera | window | columns the stage has no map for |
 |---|---|---|
-| **Smart** (default) | `L = clamp(53, 106−dr, dl)` px of the reveal on the left, `dl`/`dr` = room left / right of the camera: left-anchored at a stage start, opening to centred as you walk (the world's left edge stays put until centred — it opens at the pace of the slowest parallax layer, ~200 px of walking on the intro), sliding to right-anchored as a room's end nears; rooms with no horizontal travel sit centred | painted with `assets/widescreen_border.png` |
-| **Centered** | 53 px each side | bordered: every stage start, room ends, vertical shafts — the classic 4:3-on-wide frame |
-| **Left edge anchored** | the 4:3 left edge is the wide left edge, all 106 px on the right | right columns beyond `Xmax+320` bordered |
+| **Smart** (default) | anchored on the 4:3 left edge while only the right has map (every stage start), opening to centred as the map appears on both sides, sliding to right-anchored as the map runs out ahead (a room's end, the stage's last screen) | none, normally: the window is placed so the empty side simply is not shown |
+| **Centered** | 53 px each side | bordered with `assets/widescreen_border.png` |
+| **Left edge anchored** | the 4:3 left edge is the wide left edge, all 106 px on the right | bordered if the map ends on the right |
 
-`dl`/`dr` come from the camera struct (`0x801D2914`: camX +6, Xmax +0x1A,
-Xmin +0x1C; the map exists for `[Xmin, Xmax+320]`) tightened per parallax
-layer (`layer+6` scroll: a far layer at parallax ¼ has only ¼ of the slack —
-without that the sky layer's map edge showed as a black strip near a stage
-start). The plugin reports the window and the void widths each world frame
-(`psx_mod_widescreen_set_window`); the framework slews the window 3 px/frame
-and snaps on world entry; menus / loading are centred and unbordered.
+#### Where "there is no map here" comes from
+
+From the stage's own tile map, read the way the renderer reads it
+(`func_800F98D8` / `func_800F99F8`): for each enabled layer, tile column
+`(layer camX + screen x) >> 4`, rows `layer camY >> 4` + 0..16, block id =
+`byte[blockmap_L + (col>>4) + ((row>>4)&31)*32]` (block maps at `0x8016EF34`,
+`+0x400` per layer), tile entry = `half[0x80171C3C + blockid*512 +
+((col&15) + (row&15)*16)*2]`, and **entry 0 is what the game itself skips**.
+A slab beyond the 4:3 view is empty when every layer's entries are 0 there.
+`cl` / `cr` are the pixels of map adjoining the view on each side.
+
+That replaced an estimate built from the camera's travel bounds
+(`Xmin`/`Xmax`), which is not the same question and got two cases badly wrong:
+a **locked camera** (the intro's Wily cutscene and boss, any scripted room)
+collapses the travel range to a point while the stage continues both ways, and
+a **parallax layer's map need not start where layer 0's does** (the intro's
+underground band starts at tile column 128) — both produced a 4:3 picture
+framed on both sides in places with map all around. ISSUES #23.
+
+Details that matter in practice:
+
+* A map's edge tiles are usually partly transparent art, so the window is
+  opened to two tiles *less* than measured (`MM8_EDGE_FADE_PX`) while borders
+  cover only what was measured: no black sliver ever leads the window, and a
+  border never eats painted art.
+* The show value is peak-held with a slow decay, so a full-height hole in a
+  map (a doorway, a deep pit) cannot yank the window as the camera passes it.
+* A scene whose **background is not tiles at all** (sprite-only rooms) is
+  detected by sampling three columns inside the view; it makes no claim about
+  its edges, so it is never framed.
+* The runtime paints a border only after that side has been empty for 8
+  frames, and the width may change freely meanwhile — an autoscrolling stage
+  opening into its map keeps its border while it shrinks, a transition state
+  that briefly looks empty never flashes one.
+* The first placement after a stage entry is adopted whole (no slide from
+  centred); later movement is slewed 3 px/frame.
+
 `tools/ws_headless.sh --camera smart|center|left` selects it headless;
 `gpu_state.ws` shows `nw_left/nw_right`, `nw_dyn_target`, `nw_void`.
 
-Border-flash protection (a centred fully-bordered frame flashed for ~3 frames
-after a menu close): borders need trusted inputs at every level — the plugin
-holds its report while camX sits outside the bounds, estimates a layer's
-parallax ratio only once the camera has moved ≥ 32 px (at `dl = 1` a slow
-layer's scroll has not ticked and the ratio read 0, collapsing both slacks),
-and the runtime paints only after the same non-zero void pair has been
-reported 10 frames running. The dynamic window itself never snaps mid-play
-(only after ≥ 10 non-world frames — a real menu/stage transition).
+#### Verified
 
-With `border_43 = true` (on here) the same image also fills the window's
-pillarbox bars when a **4:3 frame meets a wide screen**: widescreen off in
-fullscreen on a 16:9 monitor. Movies keep the cinematic black bars. GL
-presenter (the default).
+| check | result |
+|---|---|
+| Smart at the intro / Tengu / Clown / Frost / Grenade starts | `L=0` (left-anchored), no borders, **0 empty px** in the frame |
+| Centered at the same five | border exactly on the empty side (53 px; Tengu 41), 0 empty px |
+| Smart, 101 samples of walking + a pause-menu cycle | `L` 0 → 53 as the map opens, **0 frames with a border**, no flashes |
+| Underground band (tile cols 128–239), from the map, final formula | 2048 → `L=0`; 2150–3400 → `L=53`; 3480/3500/3520 → `L=66/86/106` (right-anchored), no borders anywhere |
+| Surface incl. the boss end | centred throughout, right-anchored only past the map's last column, no borders |
+| Probe vs. what is on screen | intro 53 vs 53 measured empty px, Frost/Grenade 53 vs 53, Tengu 41 vs 31 (the extra is Tengu's quad-drawn sky, which the tile probe cannot see) |
 
-The border (`assets/widescreen_border.png`, 426×240, tiled from
-`assets/widescreen_border_tile.png`) is the NOW LOADING screen's Metool pattern
-— one 128×64 cell lifted from a native capture of that screen (`screenshot`
-during the load; the pattern's exact period is 128×64, verified pixel-for-pixel
-on the capture), phased so a whole Metool sits inside a 53-px strip, tiled
-static and dimmed to 85 % so it reads as a frame. Replace the PNG for a
-different look; any size works.
-
-Verified: Smart opens 0 → 53 over ~150 frames of walking on the intro with
-no seam or black strip; Centered borders 53 px left on the intro / Tengu /
-Clown starts (and 29 px right on Clown Man, whose first room travels 24 px);
-Left is the previous behaviour.
-
+### Left-anchored reveal — the design
 ### Left-anchored reveal — the design
 
 The wide frame's left edge **is** the 4:3 left edge (`[widescreen]

@@ -1,4 +1,4 @@
-psxrecomp=7889453 (78894535861e5364415b5cababf39da64f5736d5)  # carlosbravoa/psxrecomp branch mm8 = mstan dca482e + 13 commits
+psxrecomp=83d9cb5 (83d9cb5e02f4edffffdb0671625423a015b3ce17)  # carlosbravoa/psxrecomp branch mm8 = mstan dca482e + 14 commits
 recomp-ui=1835ef3 (1835ef302cfa97ad16ac06c17395a7ab09380800)  # carlosbravoa/recomp-ui branch mm8 = mstan 1b91c14 + 2 commits
 recomp-net=d65918f (d65918fde56231099e5fbc0a3bd789a7ce0e3552)
 retcomm-rbengine=8a25408 (8a254082fa77600c0fe482d22f23ddd117f1b774)

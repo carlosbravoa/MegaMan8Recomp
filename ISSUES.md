@@ -551,6 +551,34 @@ gap can be shot down before it deploys — in widescreen it is exposed to buster
 fire ~106 px earlier (shots reach the wide edge). That is the "reveal extends
 gameplay" trade-off, not a spawn bug; see the A/B choice in the widescreen doc.
 
+## #23 — Widescreen: both borders in places with stage all around (intro boss, underground) — FIXED (2026-08-20)
+
+Reported with a screenshot of the intro's Wily cutscene: the picture collapsed
+to 4:3 with a border on both sides, in the middle of a stage that visibly
+continues; likewise in the intro's underground section. Root cause was the
+Smart camera's model, not the borders: it inferred "how much map is there" from
+the camera's TRAVEL bounds (`Xmin`/`Xmax` of the current scroll zone) plus a
+parallax-ratio estimate from the layer scrolls. Neither answers the question.
+A locked camera (cutscene, boss, any scripted room) collapses the travel range
+to a point while the map continues both ways, and a parallax layer's map need
+not start where layer 0's does — the intro's underground band starts at tile
+column 128, so the estimate read "no map either side" and framed the view.
+
+Fixed by measuring the stage's own tile map the way the renderer reads it
+(block maps at 0x8016EF34 + 0x400*L, tile table 0x80171C3C, entry 0 = the
+game draws nothing) over the layers and rows the view shows. From that the
+window is placed to *avoid* showing an empty side (left-anchored at a stage
+start, centred once the map is on both sides, right-anchored where it runs
+out) and only what is genuinely map-less is bordered. Also: the first
+placement after a stage entry is adopted whole instead of sliding in from
+centred (that slide trailed a shrinking empty strip), and the runtime's
+anti-flash rule became per-side and width-agnostic so a shrinking border
+still paints. Verified on five stage starts (0 empty px, no borders in Smart;
+exact-side borders in Centered), a 101-sample walk with a menu cycle (no
+border frames at all), and — from the dumped map — the underground band and
+the surface's end, which now anchor instead of framing. See
+`docs/WIDESCREEN.md` "Camera".
+
 ## #20 — Host menus leaked their confirm key/button into the game — FIXED
 
 Saving a slot with Enter opened the game's pause menu; loading a state into

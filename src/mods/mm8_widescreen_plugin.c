@@ -78,120 +78,171 @@ static void mm8_widescreen_tile_arena(void) {
 }
 
 /*
- * Camera option ("camera": left / center / smart) — where the wide window sits
- * over the world, decided from the stage's authored camera bounds (camera
- * struct 0x801D2914: camX +6, Xmax +0x1A, Xmin +0x1C; the map exists for at
- * least [Xmin, Xmax+320]):
+ * Camera option ("camera": left / center / smart) and the void (border) widths.
  *
- *   left    anchor 1: the wide frame's left edge is the 4:3 left edge, the
- *           whole reveal on the right; columns beyond Xmax+320 are bordered.
- *   center  anchor 0: half the reveal each side; columns beyond the map on
- *           either side (every stage start, every room end, vertical shafts)
- *           are bordered — the classic 4:3-game-on-a-wide-screen frame.
- *   smart   anchor 3 (dynamic): L = clamp(53, 106 - dr, dl) with dl = camX -
- *           Xmin, dr = Xmax - camX: left-anchored at a stage start, opening
- *           to centred as the camera moves right (the world's left edge stays
- *           put until the window is centred), sliding to right-anchored as the
- *           end of the room approaches; a room with no horizontal travel sits
- *           centred with borders both sides. The game logic uses the widest
- *           reveal each side can reach, so the window's position never changes
- *           what spawns, lives or is on-screen.
+ * Both are decided from the STAGE'S OWN TILE MAP, not from the camera's travel
+ * bounds. The bounds only say where the camera may scroll in the current zone,
+ * which is not where the map has content: at the intro's final boss (and in
+ * every locked room / cutscene) the zone collapses to a point while the stage
+ * continues both ways, and the old bounds-based estimate read that as "no map
+ * either side" and framed a 4:3 picture with both borders. Layer scrolls were
+ * an equally bad proxy: a parallax layer's map need not start where layer 0's
+ * does (the intro's underground band starts at tile column 128).
  *
- * Voids (border columns) for any L: left = max(0, L - dl), right =
- * max(0, (106 - L) - dr). Reported each world frame from the tile-renderer
- * hook; non-world frames (menus) are centred by the framework and unbordered.
+ * The renderer's own lookup, mirrored here (func_800F98D8 / func_800F99F8):
+ *
+ *   tile column   = (layer camX + screen x) >> 4        (camX at layer+6)
+ *   tile row      = (layer camY >> 4) + 0..16           (camY at layer+8)
+ *   block id      = byte  [blockmap_L + (tilecol>>4) + ((tilerow>>4)&31)*32]
+ *   tile entry    = half  [0x80171C3C + blockid*512 + ((tilecol&15) + (tilerow&15)*16)*2]
+ *   entry == 0    -> nothing is drawn there (the emitter skips it)
+ *
+ * A 16-px slab beyond the 4:3 view is EMPTY when every enabled layer's entries
+ * are 0 over the visible rows; `cl` / `cr` are how many px of content adjoin
+ * the view on each side (capped at the reveal). From those:
+ *
+ *   smart   L = clamp(extra/2, extra-cr, cl): left-anchored while only the
+ *           right has map (stage start), centred once both sides do, right-
+ *           anchored when the map runs out on the right (a stage's end, the
+ *           boss room) — with no borders in any of those cases.
+ *   center  L = extra/2, left  L = 0.
+ *   voids   vl = max(0, L - cl), vr = max(0, (extra-L) - cr): only the part of
+ *           the reveal that has no map is bordered, on the side it is missing,
+ *           and a room with map on neither side (a closed 4:3 arena) gets the
+ *           symmetric frame.
+ *
+ * Presentation only: the reveal budget the game logic sees never changes.
  */
-#define MM8_LAYER0_CAMX_ 0x801D291Au
-#define MM8_CAM_X_MAX 0x801D292Eu   /* camera struct + 0x1A */
-#define MM8_CAM_X_MIN 0x801D2930u   /* camera struct + 0x1C */
+#define MM8_LAYER_BASE      0x801D2914u   /* camera/layer structs, stride 0x30 */
+#define MM8_LAYER_STRIDE    0x30u
+#define MM8_LAYERS          3
+#define MM8_BLOCKMAP_BASE   0x8016EF34u   /* layer 0 block map; +0x400 per layer */
+#define MM8_BLOCKMAP_STRIDE 0x400u
+#define MM8_TILE_TABLE      0x80171C3Cu   /* 16x16-tile blocks of 512 bytes */
+#define MM8_VIEW_W          320
 
 static int s_camera_mode = 3;        /* 1 left, 0 center, 3 smart */
+
+/* Does layer L draw any tile in world tile column `tc`, over the rows the
+ * view shows? (The renderer walks 16 rows from camY>>4; 17 covers the split.) */
+static int mm8_tilecol_has_content(int L, int32_t tc, int32_t tr0) {
+    if (tc < 0) return 0;
+    const int32_t bc = tc >> 4;
+    if (bc < 0 || bc > 31) return 0;
+    const uint32_t bmap = MM8_BLOCKMAP_BASE + MM8_BLOCKMAP_STRIDE * (uint32_t)L;
+    int32_t last_br = -1;
+    uint32_t bid = 0;
+    for (int r = 0; r <= 16; r++) {
+        const int32_t tr = tr0 + r;
+        const int32_t br = (tr >> 4) & 0x1f;
+        if (br != last_br) {
+            bid = psx_mod_read_byte(bmap + (uint32_t)(bc + br * 32));
+            last_br = br;
+        }
+        const uint32_t ti = (uint32_t)((tc & 15) + (tr & 15) * 16);
+        if (psx_mod_read_half(MM8_TILE_TABLE + bid * 512u + ti * 2u) != 0) return 1;
+    }
+    return 0;
+}
+
+/* Pixels of background adjoining the 4:3 view on one side (-1 left, +1 right),
+ * capped at `extra`. Exact: a layer's content ends on a world tile boundary,
+ * which the camera's sub-tile offset turns into an exact screen position. */
+static int32_t mm8_content_px(int side, int32_t extra) {
+    int32_t best = 0;
+    for (int L = 0; L < MM8_LAYERS; L++) {
+        const uint32_t layer = MM8_LAYER_BASE + MM8_LAYER_STRIDE * (uint32_t)L;
+        if (psx_mod_read_byte(layer) == 0) continue;                /* layer off */
+        const int32_t cx = (int16_t)psx_mod_read_half(layer + 6u);
+        const int32_t tr0 = (int16_t)psx_mod_read_half(layer + 8u) >> 4;
+        int32_t px = 0;
+        if (side < 0) {
+            for (int32_t tc = cx >> 4; px < extra; tc--) {
+                if (!mm8_tilecol_has_content(L, tc, tr0)) break;
+                px = cx - tc * 16;                       /* to this column's left edge */
+            }
+        } else {
+            for (int32_t tc = (cx + MM8_VIEW_W) >> 4; px < extra; tc++) {
+                if (!mm8_tilecol_has_content(L, tc, tr0)) break;
+                px = (tc + 1) * 16 - (cx + MM8_VIEW_W);  /* to its right edge */
+            }
+        }
+        if (px > best) best = px;                        /* any layer covering counts */
+    }
+    return best > extra ? extra : best;
+}
+
+/* Is this scene's background drawn from the tile map at all? A room built
+ * only from sprites/quads (a cutscene stage, an all-black interior) would read
+ * as "empty everywhere" and get framed on both sides, which is exactly the
+ * failure the bounds-based estimate used to produce. Sampling three columns
+ * INSIDE the 4:3 view answers it: if the view itself has no tiles, this scene
+ * is not tile-backed and we make no claim about its edges. */
+static int mm8_scene_is_tiled(void) {
+    for (int L = 0; L < MM8_LAYERS; L++) {
+        const uint32_t layer = MM8_LAYER_BASE + MM8_LAYER_STRIDE * (uint32_t)L;
+        if (psx_mod_read_byte(layer) == 0) continue;
+        const int32_t cx = (int16_t)psx_mod_read_half(layer + 6u);
+        const int32_t tr0 = (int16_t)psx_mod_read_half(layer + 8u) >> 4;
+        for (int32_t sx = 40; sx < MM8_VIEW_W; sx += 120)
+            if (mm8_tilecol_has_content(L, (cx + sx) >> 4, tr0)) return 1;
+    }
+    return 0;
+}
 
 static void mm8_widescreen_place_window(void) {
     const int32_t extra = psx_mod_widescreen_extra();
     if (extra <= 0) return;
-    const int32_t camx = (int16_t)psx_mod_read_half(MM8_LAYER0_CAMX_);
-    const int32_t xmin = (int16_t)psx_mod_read_half(MM8_CAM_X_MIN);
-    const int32_t xmax = (int16_t)psx_mod_read_half(MM8_CAM_X_MAX);
-    /* Transitional camera-struct states (menu open/close wipes, scroll-zone
-     * handoffs) briefly hold inconsistent bounds; trusting such a frame
-     * flashed a fully bordered centred frame mid-play. Rule: report NON-ZERO
-     * border columns only once the bounds have been STABLE for a while — a
-     * genuine no-travel room (a boss arena, xmin == xmax == camX) holds its
-     * bounds for minutes and passes after the short delay (behind the door
-     * wipe); a transition flaps them frame to frame and is held out
-     * indefinitely. camX outside the bounds is never sane: hold. */
-    static int32_t s_prev_xmin = 0x7FFFFFFF, s_prev_xmax = 0x7FFFFFFF;
-    static int32_t s_prev_camx = 0x7FFFFFFF;
-    static int32_t s_stable = 0;
-    static int32_t s_camx_moved = 0;    /* camX changed while these bounds live */
-    if (camx < xmin - 32 || camx > xmax + 32 || xmax < xmin) {
-        s_stable = 0;                                   /* not sane: hold */
-        s_camx_moved = 0;
-        s_prev_xmin = s_prev_xmax = 0x7FFFFFFF;
+    if (!mm8_scene_is_tiled()) {          /* no evidence either way: no borders */
+        psx_mod_widescreen_set_window(s_camera_mode == 3 ? extra / 2 : -1, 0, 0);
         return;
     }
-    if (xmin == s_prev_xmin && xmax == s_prev_xmax) {
-        if (s_stable < 1000) s_stable++;
-        if (camx != s_prev_camx) s_camx_moved = 1;
-    } else {
-        s_stable = 0;
-        s_camx_moved = 0;
-        s_prev_xmin = xmin; s_prev_xmax = xmax;
-    }
-    s_prev_camx = camx;
-    int32_t dl = camx - xmin, dr = xmax - camx;
-    if (dl < 0) dl = 0;
-    if (dr < 0) dr = 0;
-    /* Parallax layers run out of map sooner than the camera bounds say: every
-     * layer's map starts at Xmin but a far layer scrolls at a fraction f of
-     * the camera (intro: 1, 1/2, 1/4 — scroll_L = Xmin + f_L*(camX-Xmin)), so
-     * it has only f_L*dl of map to the left of its own edge and f_L*dr to the
-     * right. Take the tightest layer: the window opens at the slowest layer's
-     * pace and no layer is ever asked for columns it does not have (the
-     * 14 px black strip at the top-left of a centred frame near a stage start
-     * was the sky layer's map edge). Layers off (+0 == 0) are skipped. */
-    {
-        int32_t dl_eff = dl, dr_eff = dr;
-        for (int L = 1; L < 3; L++) {
-            const uint32_t layer = 0x801D2914u + 0x30u * (uint32_t)L;
-            if (psx_mod_read_byte(layer) == 0) continue;
-            const int32_t sc = (int16_t)psx_mod_read_half(layer + 6u);
-            int32_t dlL = sc - xmin;
-            if (dlL < 0) dlL = 0;
-            if (dlL > dl) dlL = dl;
-            if (dlL < dl_eff) dl_eff = dlL;
-            /* Right slack scales with the observed parallax ratio — which is
-             * only estimable once the camera has moved a real distance. At
-             * dl=1 a slow layer's scroll has not ticked yet and dlL/dl reads
-             * 0, which collapsed dr to 0 and flashed a fully bordered frame
-             * one step off a stage start. Below the threshold leave dr alone:
-             * the window is pinned near the left edge there anyway. */
-            if (dl >= 32) {
-                int32_t drL = (int32_t)((int64_t)dr * dlL / dl);
-                if (drL < dr_eff) dr_eff = drL;
-            }
-        }
-        dl = dl_eff; dr = dr_eff;
-    }
+    const int32_t cl = mm8_content_px(-1, extra);
+    const int32_t cr = mm8_content_px(+1, extra);
+    /* A map's edge tiles are usually partly transparent art (the intro fades
+     * out over two columns), so the last column that HAS a tile is not painted
+     * to its edge. SHOW two tiles less than measured — no black sliver ever
+     * leads the window — but COVER only what is measured, so a border never
+     * eats painted art. Deep inside a map both saturate and neither matters.
+     *
+     * Peak-hold with a slow decay: a column-wide hole in a map (a doorway, a
+     * pit that reaches the top) must not yank the window for the frames the
+     * camera passes it; a real approach to a map's end still moves it, just
+     * over ~a second. The border widths stay instantaneous (the runtime's own
+     * settle rule keeps them from flashing). */
+    #define MM8_EDGE_FADE_PX 32
+    static int32_t hl = 0, hr = 0;
+    const int32_t nl = cl > MM8_EDGE_FADE_PX ? cl - MM8_EDGE_FADE_PX : 0;
+    const int32_t nr = cr > MM8_EDGE_FADE_PX ? cr - MM8_EDGE_FADE_PX : 0;
+    hl = nl > hl ? nl : (hl > 2 ? hl - 2 : 0);
+    hr = nr > hr ? nr : (hr > 2 ? hr - 2 : 0);
+    const int32_t sl = hl, sr = hr;
+
     int32_t L;
     if (s_camera_mode == 1) L = 0;
     else if (s_camera_mode == 0) L = extra / 2;
-    else {
-        const int32_t lo = extra - dr, hi = dl;        /* L must satisfy lo <= L <= hi */
-        L = extra / 2;
-        if (lo <= hi) { if (L < lo) L = lo; if (L > hi) L = hi; }
-        /* else: not enough map either side — stay centred, border both */
+    else if (cl + cr >= extra) {
+        /* The map can fill the whole wide frame: any L in [extra-cr, cl]
+         * shows no void. Aim for centred (and, inside that freedom, for not
+         * leading with a map's edge tile), then clamp into the interval —
+         * which is what anchors the window left at a stage start (cl = 0) and
+         * right where the map ends (cr = 0). */
+        int32_t aim = extra / 2;
+        if (aim > sl) aim = sl;
+        L = aim;
+        if (L < extra - cr) L = extra - cr;
+        if (L > cl) L = cl;
+        if (L < 0) L = 0;
+        if (L > extra) L = extra;
+    } else {
+        /* Narrower than the wide frame (a closed room): show all the map there
+         * is and split what is missing evenly, so the frame stays symmetric. */
+        L = cl + (extra - cl - cr) / 2;
+        (void)sr;
     }
-    int32_t vl = L - dl, vr = (extra - L) - dr;
+    int32_t vl = L - cl, vr = (extra - L) - cr;
     if (vl < 0) vl = 0;
     if (vr < 0) vr = 0;
-    /* Borders need trusted bounds: either the camera has moved within them
-     * (a live room) or they have outlasted any transition wipe (a no-travel
-     * room — boss arena; menu-close wipes hold a look-alike zero-travel state
-     * for ~40 frames with camX frozen, so 90 clears every wipe). */
-    if ((vl > 0 || vr > 0) &&
-        !(s_stable >= 10 && (s_camx_moved || s_stable >= 90))) return;
     psx_mod_widescreen_set_window(s_camera_mode == 3 ? L : -1, vl, vr);
 }
 
